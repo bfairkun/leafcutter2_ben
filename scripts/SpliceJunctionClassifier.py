@@ -388,7 +388,8 @@ def ClassifySpliceJunction(options):
 
     gtf_annot, rundir, outprefix = options.annot, options.rundir, options.outprefix
     verbose = False or options.verbose
-    perind_file = f"{rundir}/{outprefix}_perind.counts.gz"
+    # perind_file = f"{rundir}/{outprefix}_perind.counts.gz"
+    perind_file = options.countfile
 
     # read leafcutter perind file and store junctions in dictionary: dic_junc
     # key = (chrom,strand), value = list of junctions [(start,end)]
@@ -416,7 +417,10 @@ def ClassifySpliceJunction(options):
     # g_info: a dictionary with (transcript_name, gene_name) as keys, and intron info as values
     try: 
         sys.stdout.write("Loading annotations...\n")
-        parsed_gtf = f"{rundir}/{gtf_annot.split('/')[-1].split('.gtf')[0]}_SJC_annotations.pckle"
+        # parsed_gtf = f"{rundir}/{gtf_annot.split('/')[-1].split('.gtf')[0]}_SJC_annotations.pckle"
+        # parsed_gtf pckle file is named using sha256sum of gtf
+        parsed_gtf = f"{rundir}/SJC_annotations_{get_digest(options.annot)}.pckle"
+
         with open(parsed_gtf, 'rb') as f:
             g_coords, g_info = pickle.load(f)
         sys.stdout.write("done!\n")
@@ -569,6 +573,16 @@ def main(options):
     sjc = merge_discordant_logics(sjc_file)
     print(list(sjc.items())[:10])
 
+def get_digest(file_path):
+    h = hashlib.sha256()
+    with open(file_path, 'rb') as file:
+        while True:
+            # Reading is buffered, so we can read smaller chunks.
+            chunk = file.read(h.block_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
 
 if __name__ == "__main__":
 
@@ -581,6 +595,7 @@ if __name__ == "__main__":
     import pandas as pd
     from Bio.Seq import Seq
     import pyfastx
+    import hashlib
     
 
     parser = argparse.ArgumentParser(description='SpliceJunctionClassifier')
@@ -603,8 +618,14 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose", dest="verbose", action="store_true", default = False,
                       help="verbose mode")
                 
-    options = parser.parse_args()
-    
+    if hasattr(sys, 'ps1'):
+        # for testing/debugging main function in interative session
+        options = parser.parse_args("-c scratch/leaf2_perind.counts.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Human_ensemblv75/Reference.fa -A GenomeFiles/Human_ensemblv75/Reannotated.B.gtf -v -o scratch/leaf2".split(' '))
+        options = parser.parse_args("-c scratch/test.junclist2.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Human_ensemblv75/Reference.fa -A GenomeFiles/Human_ensemblv75/Reannotated.B.gtf -v -r scratch/ -o leaf2".split(' '))
+
+    else:
+        options = parser.parse_args()
+
     main(options)
 
 
