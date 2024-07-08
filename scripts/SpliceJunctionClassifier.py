@@ -252,7 +252,7 @@ def parse_annotation(gtf_annot: str):
             continue 
         if dic['transcript_type'] != "protein_coding" and anntype == "UTR": 
             continue
-        start, end = int(dic['start']) - 1, int(dic['end']) # convert to BED format
+        start, end = int(dic['start']), int(dic['end']) # convert to BED format
         strand = dic['strand']
     
         if (chrom, strand) not in genes_coords:
