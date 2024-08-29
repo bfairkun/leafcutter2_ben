@@ -210,17 +210,49 @@ def parse_gtf(gtf: str):
         ln = ln.strip().split('\t')
         for i in range(len(fields)):
             dic[fields[i]] = ln[i]
-
-        # add 4 additional fields, parsed from info field
+        # Parse the info field into a dictionary
+        info_fields = {}
+        for entry in dic['info'].split(';'):
+            entry = entry.strip()
+            if '=' in entry:
+                key, value = entry.split('=')
+            elif ' ' in entry:
+                key, value = entry.split()
+                value = value.replace('"', '')
+            else:
+                continue
+            info_fields[key] = value
+        # Add 4 additional fields from the parsed info fields
         for ks in ['gene_name', "transcript_type","transcript_name", "gene_type"]:
-            info_fields = [{x.split()[0]: x.split()[1].replace('"', '')} 
-                          for x in dic['info'].split(';') if len(x.split()) > 1]
-            info_fields = {k: v for d in info_fields for k, v in d.items()}
-            try: 
-                dic[ks] = info_fields[ks]
-            except:
-                dic[ks] = None # if line is a gene, then wont have transcript info
+            dic[ks] = info_fields.get(ks, None)  # If key not found, return None
         yield dic
+
+# def parse_gtf(gtf: str):
+#     '''Lower level function to parse GTF file
+#     - gtf: str : path to GTF annotation file
+#     - returns: dictionary with keys: 
+#         chrom, source, type, start, end, strand, frame, info, gene_name, transcript_type, transcript_name, gene_type
+#     '''
+#     fields = ["chrom", "source", "type", "start", "end", ".","strand","frame", "info"]
+#     open_gtf = lambda x: gzip.open(x) if ".gz" in x else open(x)
+#     for ln in open_gtf(gtf):
+#         ln = ln.decode('ascii') if ".gz" in gtf else ln
+#         dic = {}
+#         if ln[0] == "#": continue
+#         ln = ln.strip().split('\t')
+#         for i in range(len(fields)):
+#             dic[fields[i]] = ln[i]
+
+#         # add 4 additional fields, parsed from info field
+#         for ks in ['gene_name', "transcript_type","transcript_name", "gene_type"]:
+#             info_fields = [{x.split()[0]: x.split()[1].replace('"', '')} 
+#                           for x in dic['info'].split(';') if len(x.split()) > 1]
+#             info_fields = {k: v for d in info_fields for k, v in d.items()}
+#             try: 
+#                 dic[ks] = info_fields[ks]
+#             except:
+#                 dic[ks] = None # if line is a gene, then wont have transcript info
+#         yield dic
          
 
 def parse_annotation(gtf_annot: str):
@@ -481,7 +513,6 @@ def ClassifySpliceJunction(options):
 
         if verbose:
             sys.stdout.write(f"LeafCutter junctions ({len(query_juncs)}) All junctions ({len(junctions)}) Start codons ({len(start_codons)}) Stop codons ({len(stop_codons)}) \n")
-
         junc_pass, junc_fail, proteins = solve_NMD(chrom,strand,junctions, 
                                                    start_codons, stop_codons, 
                                                    gene_name)
@@ -619,15 +650,14 @@ if __name__ == "__main__":
                       help="verbose mode")
                 
     if hasattr(sys, 'ps1'):
-        # for testing/debugging main function in interative session
-        options = parser.parse_args("-c scratch/leaf2_perind.counts.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Human_ensemblv75/Reference.fa -A GenomeFiles/Human_ensemblv75/Reannotated.B.gtf -v -o scratch/leaf2".split(' '))
-        options = parser.parse_args("-c scratch/test.junclist2.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Human_ensemblv75/Reference.fa -A GenomeFiles/Human_ensemblv75/Reannotated.B.gtf -v -r scratch/ -o leaf2".split(' '))
-
+        # # for testing/debugging main function in interative session
+        # options = parser.parse_args("-c scratch/leaf2_perind.counts.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Human_ensemblv75/Reference.fa -A GenomeFiles/Human_ensemblv75/Reannotated.B.gtf -v -o scratch/leaf2".split(' '))
+        # options = parser.parse_args("-c scratch/test.junclist2.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Human_ensemblv75/Reference.fa -A /project2/yangili1/bjf79/ReferenceGenomes/Human_ensemblv75/Reference -v -r scratch/ -o leaf2".split(' '))
+        # options = parser.parse_args("-c scratch/Chicken.juncs.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Chicken_UCSC.galGal6_ensv101/Reference.fa -A scratch/Chicken.gtf -v -r scratch/ -o leaf2".split(' '))
+        options = parser.parse_args("-c scratch/Chicken.juncs.adjustedBy1.txt.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Chicken_UCSC.galGal6_ensv101/Reference.fa -A /project2/yangili1/bjf79/ReferenceGenomes/Chicken_UCSC.galGal6_ensv101/Reference.basic.ProteinCodingTagAddedToAll.gtf -v -r scratch/ -o leaf2_adjusted".split(' '))
     else:
         options = parser.parse_args()
-
     main(options)
-
 
 
 
