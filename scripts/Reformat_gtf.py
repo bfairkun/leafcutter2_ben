@@ -54,7 +54,7 @@ def reorder_gtf(gtf_stringio, output_gtf, mode='w'):
     df.loc[:, 'seqname'] = df['seqname'].astype(str)
 
     # Sort by seqname, start_parent_gene, gene_id, is_gene, start_parent_transcript, transcript_id, start
-    df_sorted = df.sort_values(by=['seqname', 'start_parent_gene', 'gene_name', 'is_gene', 'start_parent_transcript', 'transcript_name', 'start'], ascending=[True, True, True, False, True, True, True]).reset_index(drop=True)
+    df_sorted = df.sort_values(by=['seqname', 'start_parent_gene', 'gene_name','strand', 'is_gene', 'start_parent_transcript', 'transcript_name', 'start'], ascending=[True, True, True, True, False, True, True, True]).reset_index(drop=True)
 
     # Drop the helper columns before writing to the output
     df_sorted = df_sorted.drop(columns=['gene_name', 'transcript_name', 'is_gene', 'start_parent_gene', 'start_parent_transcript'])
@@ -573,8 +573,9 @@ def main(args=None):
 
     logging.info(f'Processing transcripts.')
     gtf_stringio = StringIO()
-    # Initialize an empty dictionary to keep coordinates of each transcript for each gene. Will need to write out gene coordinates as most extensive span of child transcripts on each chromosome (because some genes appear on more than one chromosome, eg X and Y in Gencode gtf)
-    gene_coords_dict = defaultdict(lambda: defaultdict(lambda: defaultdict(set)))
+    # Initialize an empty dictionary to keep coordinates of each transcript for each gene. Will need to write out gene coordinates as most extensive span of child transcripts on each chromosome:strand pair, because some genes appear on more than one chromosome, (eg X and Y in Gencode gtf), or even on the same chromosome but different strands (eg some TRNAA gene appears on chr6 + strand and chr6 - strand in human RefSeq annotations from UCSC)
+    gene_coords_dict = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda : defaultdict(set))))
+    # gene_coords_dict[gene_name][transcript.chr][transcript.strand]['end'] = SetOfTranscriptEnds
     gene_types_dict = defaultdict(lambda: defaultdict((set)))
     bed_out_fh = None
     if args.bed12_out:
@@ -663,22 +664,21 @@ def main(args=None):
             if bed_out_fh is not None:
                 _ = bed_out_fh.write(bed12_formatted_bedline(transcript, attributes_str='\t' + '\t'.join([gene_name, transcript_name, gene_type, transcript_type_out] + extra_attribute_values + [NMDFinderB_NoWhitespace, str(CDSLen)])))
             # gene_dict contains gene level information needed to properly write out parent (gene-level) lines based on child (transcript-level) lines
-            gene_coords_dict[gene_name][transcript.chr]['start'].add(transcript.start)
-            gene_coords_dict[gene_name][transcript.chr]['end'].add(transcript.end)
-            gene_coords_dict[gene_name][transcript.chr]['strand'].add(transcript.strand)
+            gene_coords_dict[gene_name][transcript.chr][transcript.strand]['start'].add(transcript.start)
+            gene_coords_dict[gene_name][transcript.chr][transcript.strand]['end'].add(transcript.end)
             gene_types_dict[gene_name]['gene_types_in_input'].add(gene_type)
             gene_types_dict[gene_name]['trancscript_types'].add(transcript_type_out)
     if bed_out_fh is not None: bed_out_fh.close()
 
     logging.info('Writing gene (parent) feature coordiantes and based on child (transcript) feature coordinates')
     for gene, chrom_dict in gene_coords_dict.items():
-        for chrom, info_dict in chrom_dict.items():
-            min_start = min(info_dict['start'])
-            max_stop = max(info_dict['end'])
-            if len(info_dict['strand']) != 1:
-                raise ValueError(f"Transcripts for gene {gene} on {chrom} are on different strands.")
-            strand = next(iter(info_dict['strand']))  # Assuming 'Strands' is a set with a single value
-            _ = gtf_stringio.write(f'{chrom}\tinput_gtf\tgene\t{min_start+1}\t{max_stop}\t.\t{strand}\t.\tgene_name "{gene}";\n')
+        for chrom, strand_dict in chrom_dict.items():
+            for StrandIteration, (strand, info_dict) in enumerate(strand_dict.items()):
+                min_start = min(info_dict['start'])
+                max_stop = max(info_dict['end'])
+                _ = gtf_stringio.write(f'{chrom}\tinput_gtf\tgene\t{min_start+1}\t{max_stop}\t.\t{strand}\t.\tgene_name "{gene}";\n')
+            if StrandIteration > 0:
+                logging.warning(f"Transcripts for gene {gene} on {chrom} are on different strands. Writing {gene} gene feature on {chrom} for more than one strand")
 
     logging.info('Writing gene_type attributes')
     gene_types_dict_final = dict()
@@ -706,6 +706,7 @@ def main(args=None):
 
 if __name__ == "__main__":
     if hasattr(sys, 'ps1'):
-        main("-i /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.gtf -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
+        # main("-i /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.gtf -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
+        main("-i scratch/TRNAA.gtf -o scratch/TRNAA_reformated.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -v -infer_gene_type_approach B -infer_transcript_type_approach B -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
     else:
         main()
