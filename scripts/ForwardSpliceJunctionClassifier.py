@@ -831,7 +831,8 @@ def ClassifySpliceJunction(
     fa,
     rundir: str = ".",
     outprefix: str = "Leaf2",
-    verbose: bool = False):
+    verbose: bool = False,
+    options = None):
     """
     perind_file: str : LeafCutter perind counts file, e.g. leafcutter_perind.counts.gz
     gtf_annot: str : Annotation GTF file, for example gencode.v37.annotation.gtf.gz
@@ -974,14 +975,19 @@ def ClassifySpliceJunction(
         if verbose:
             sys.stdout.write(f"LeafCutter junctions ({len(query_juncs)}) All junctions ({len(junctions)}) Start codons ({len(start_codons)}) Stop codons ({len(stop_codons)}) \n")
 
-        
-        junc_pass, junc_fail, proteins = solve_NMD(chrom,strand,junctions, 
-                                            start_codons, stop_codons, 
-                                            gene_name, fa)
-
-        junc_fail = set(junc_fail.keys())
-        junc_pass = set(junc_pass.keys())
+        if len(junctions) <= options.max_juncs:
+            junc_pass, junc_fail, proteins = solve_NMD(chrom,strand,junctions, 
+                                                start_codons, stop_codons, 
+                                                gene_name, fa)
+            junc_fail = set(junc_fail.keys())
+            junc_pass = set(junc_pass.keys())
+        else:
+            if verbose:
+                sys.stdout.write(f"Skipping... Too many juncs\n")
+            junc_pass = set()
+            junc_fail = set(junctions)
         failing_juncs = junc_fail.difference(junc_pass)
+
 
 
         old_junc_pass = junc_pass
@@ -1013,7 +1019,7 @@ def ClassifySpliceJunction(
             #NOTE: revert to leafcutter2 bed format coordiantes for junctions
             fout.write('\t'.join([gene_name, f'{chrom}:{j[0]}-{j[1]-1}',strand,
                                   str(annotated), str(bool_pass), str(utr), str(gencode)])+'\n')
-            
+
         for w in range(len(ptc_junctions)):
             j = ptc_junctions[w]
             if j not in g_info[gene_name]['pcjunctions']:
@@ -1056,6 +1062,7 @@ def main(options):
         rundir=options.rundir,
         outprefix=options.outprefix,
         verbose=options.verbose,
+        options = options
     )
 
 
@@ -1080,10 +1087,15 @@ if __name__ == "__main__":
     
     parser.add_argument("-G", "--genome", dest="genome",
                   help="Reference genome fasta file.")
+    
+    parser.add_argument("--max_juncs_for_solving", dest="max_juncs", metavar='N', default=10000, type=int,
+                  help="skip solveNMD function (which can require lots of memory and time for genes with many juncs) if gene contains more than N juncs. Juncs in skipped genes are assigned Coding=False")
 
     parser.add_argument("-v", "--verbose", dest="verbose", action="store_true", default = False,
                       help="verbose mode")
-                
-    options = parser.parse_args()
-    
+    if hasattr(sys, 'ps1'):
+        options = parser.parse_args('-c scratch/Test.10K.juncs.tsv.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -A MazinLeafcutterAnalysis/ReformatedGTFs/Human_UCSC.hg38_GencodeComprehensive46.gtf -v -r MazinLeafcutterAnalysis/ClassifyJuncs -o scratch.'.split()) #for debugging in interactive session
+    else:
+        options = parser.parse_args()
     main(options)
+
