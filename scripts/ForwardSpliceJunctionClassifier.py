@@ -976,14 +976,17 @@ def ClassifySpliceJunction(
             sys.stdout.write(f"LeafCutter junctions ({len(query_juncs)}) All junctions ({len(junctions)}) Start codons ({len(start_codons)}) Stop codons ({len(stop_codons)}) \n")
 
         if len(junctions) <= options.max_juncs:
-            junc_pass, junc_fail, proteins = solve_NMD(chrom,strand,junctions, 
+            try:
+                junc_pass, junc_fail, proteins = solve_NMD(chrom,strand,junctions, 
                                                 start_codons, stop_codons, 
                                                 gene_name, fa)
-            junc_fail = set(junc_fail.keys())
-            junc_pass = set(junc_pass.keys())
+                junc_fail = set(junc_fail.keys())
+                junc_pass = set(junc_pass.keys())
+            except:
+                if verbose: sys.stdout.write(f"Skipping... seq fetching problem\n")
+                continue
         else:
-            if verbose:
-                sys.stdout.write(f"Skipping... Too many juncs\n")
+            if verbose: sys.stdout.write(f"Skipping... Too many juncs\n")
             junc_pass = set()
             junc_fail = set(junctions)
         failing_juncs = junc_fail.difference(junc_pass)
@@ -1094,8 +1097,10 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose", dest="verbose", action="store_true", default = False,
                       help="verbose mode")
     if hasattr(sys, 'ps1'):
-        options = parser.parse_args('-c scratch/Test.10K.juncs.tsv.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -A MazinLeafcutterAnalysis/ReformatedGTFs/Human_UCSC.hg38_GencodeComprehensive46.gtf -v -r MazinLeafcutterAnalysis/ClassifyJuncs -o scratch.'.split()) #for debugging in interactive session
+        # options = parser.parse_args('-c scratch/Test.10K.juncs.tsv.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -A  MazinLeafcutterAnalysis/Reformated_ExtraGTFs/RefSeq/Human_UCSC.hg38_GencodeComprehensive46.gtf -v -r MazinLeafcutterAnalysis/ClassifyJuncs/RefSeq -o scratch. --max_juncs_for_solving 1000'.split()) #for debugging in interactive session
+        options = parser.parse_args('-c scratch/Test.head.Rabbit.juncs.tsv.gz -G /project2/yangili1/bjf79/ReferenceGenomes/Rabbit_UCSC.oryCun2_ensv101/Reference.fa -A MazinLeafcutterAnalysis/Reformated_ExtraGTFs/RefSeq/Rabbit_UCSC.oryCun2_ensv101.gtf -v -r MazinLeafcutterAnalysis/ClassifyJuncs/RefSeq -o scratch. --max_juncs_for_solving 1000'.split())
     else:
         options = parser.parse_args()
     main(options)
+
 

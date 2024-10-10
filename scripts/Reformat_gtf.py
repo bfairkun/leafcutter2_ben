@@ -522,10 +522,11 @@ def add_gene_type_to_gtf(gtf_io, gene_type_dict):
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Helper script to reformat GTF file for compatibility with SpliceJunctionClassifier.py. More specifically, for a GTF to be compatible with that script, each gene feature and transcript feature must have a 'gene_type' and 'gene_name' attributes where 'gene_type' attribute value is 'protein_coding' for protein coding genes, and 'gene_name' attribute value is unique for each gene. Each child transcript feature must also have 'transcript_type' and 'transcript_name' attributes, where 'transcript_type' is 'protein_coding' for protein_coding (productive) transcript isoforms. Also, each protein_coding isoform must have a child 'exon' 'CDS', 'start_codon' and 'stop_codon' features (which also have the gene_type, gne_name, transcript_type, and transcript_name attributes of their parent features). As in Gencode v43 GTFs, transcripts that are not 'protein_coding' may also have 'CDS', 'start_codon' and 'start_codon' child features but if the transcript_type attribute is not 'protein_coding', these will not determine inclusion into the set of productive start/stop codons by SpliceJunctionClassifier.py. Furthermore, this script adds NMDetectiveB attributes to the transcript (see options for this feature). This is useful in cases when a GTF may be missing 'transcript_type' attribute, and if it is even missing 'CDS' features, this script can add the 'CDS', 'start_codon', and 'stop_codon' features after attempting to translate the transcript sequence and assign values to the 'transcript_type' attribute (eg, 'protein_coding' if NMDetectiveB result is 'Last exon' and 'noncoding if NMDetectiveB result is 'Trigger NMD'). This script also optionally can output bed12 file for each transcript. I have tested this on some GTF files from Gencode, Ensembl, and UCSC. Depending on the exact nature (eg attribute names) in the input GTF, you may have to alter some options to make the output suitable for SpliceJunctionClassifier.py.")
-    parser.add_argument('-i', dest='gtf_in', required=True, help='Input GTF file')
+    parser.add_argument('-i', dest='gtf_in', required=True, help='Input GTF file. May alternatively use bed12 file to define input transcripts (see "-input_type" argument)')
     parser.add_argument('-o', dest='gtf_out', required=True, help='Output GTF file')
+    parser.add_argument('-input_type', dest='input_type', choices=['gtf', 'bed12'], default='gtf', help='"-i" input file that contains transcript structures can be either gtf format, or bed12 format. If bed12 format, transcript_name, gene_name, transcript_type, and gene_type attributes must be added as columns 13, 14, 15, and 16, respectively. default: "%(default)s"')
     parser.add_argument('-fa', dest='fasta_in', required=True, help='Input FASTA file')
-    parser.add_argument('-bed12_out', dest='bed12_out', required=False, help='Optional bed12 out. One line per transcript. Attributes as extra columns')
+    parser.add_argument('-bed12_out', dest='bed12_out', help='Optional bed12 out. One line per transcript. Attributes as extra columns')
     parser.add_argument('-n', dest='n_lines', help='Number of lines to read in gtf. Useful for quick debugging, but reading only n lines may cause buggy behavior if a transcript feature line is processed but not all of its child (eg exon, or CDS) features', type=int)
     parser.add_argument('-infer_transcript_type_approach', dest='infer_transcript_type_approach', choices=['A', 'B', 'C'], default='A', help='Approach to determine the transcript_type attribute value in output. (A) Use existing value. (B) Value is "protein_coding" if a the transcript contains child features of type "CDS". Value is "noncoding" otherwise. (C) Translate the transcript and use NMDetectiveB on the ORF. See -translation_approach and -NMDetectiveB_coding_threshold options to specify how this is done. default: "%(default)s"')
     parser.add_argument('-infer_gene_type_approach', dest='infer_gene_type_approach', choices=['A', 'B'], default='A', help='Approach to determine the gene_type attribute value in output. (A) Use existing value. (B) Value is "protein_coding" if gene has any child transcripts have attribute transcript_type "protein_coding". Value is "noncoding" otherwise. default: "%(default)s"')
@@ -566,10 +567,14 @@ def main(args=None):
     attributes_to_extract = ','.join([required_attributes, args.extra_attributes])
 
     # gtf2bed
-    logging.info(f'Reading in gtf and converting transcripts to bedparse.bedline objects...')
-    bed12 = run_bedparse_gtf2bed(args.gtf_in, '--extraFields', attributes_to_extract, n=args.n_lines)
+    logging.info(f'Reading in transcripts and converting transcripts to bedparse.bedline objects...')
+    if args.input_type == "gtf":
+        bed12 = run_bedparse_gtf2bed(args.gtf_in, '--extraFields', attributes_to_extract, n=args.n_lines)
+    elif args.input_type == "bed12":
+        with open(args.gtf_in, 'r') as f:
+            bed12 = f.read()
     NumTrancsripts = len(bed12.splitlines())
-    logging.info(f'Read in {NumTrancsripts} from gtf.')
+    logging.info(f'Read in {NumTrancsripts} from input.')
 
     logging.info(f'Processing transcripts.')
     gtf_stringio = StringIO()
@@ -662,7 +667,7 @@ def main(args=None):
             _ = gtf_stringio.write(gtf_formatted_bedline_cds(transcript_out, source=source, attributes_str=transcript_attributes))
             _ = gtf_stringio.write(gtf_formatted_bedline_utr_start_stop(transcript_out, source=source, attributes_str=transcript_attributes))
             if bed_out_fh is not None:
-                _ = bed_out_fh.write(bed12_formatted_bedline(transcript, attributes_str='\t' + '\t'.join([gene_name, transcript_name, gene_type, transcript_type_out] + extra_attribute_values + [NMDFinderB_NoWhitespace, str(CDSLen)])))
+                _ = bed_out_fh.write(bed12_formatted_bedline(transcript, attributes_str='\t' + '\t'.join([transcript_name, gene_name, transcript_type_out, gene_type] + extra_attribute_values + [NMDFinderB_NoWhitespace, str(CDSLen)])))
             # gene_dict contains gene level information needed to properly write out parent (gene-level) lines based on child (transcript-level) lines
             gene_coords_dict[gene_name][transcript.chr][transcript.strand]['start'].add(transcript.start)
             gene_coords_dict[gene_name][transcript.chr][transcript.strand]['end'].add(transcript.end)
@@ -706,7 +711,9 @@ def main(args=None):
 
 if __name__ == "__main__":
     if hasattr(sys, 'ps1'):
-        # main("-i /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.gtf -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
-        main("-i scratch/TRNAA.gtf -o scratch/TRNAA_reformated.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -v -infer_gene_type_approach B -infer_transcript_type_approach B -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
+        main("-i /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.gtf -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.bed".split(' '))
+        main("-i scratch/Mouse_UCSC.10K.bed -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
+        main("-i Maz -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
+        # main("-i scratch/TRNAA.gtf -o scratch/TRNAA_reformated.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -v -infer_gene_type_approach B -infer_transcript_type_approach B -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
     else:
         main()
