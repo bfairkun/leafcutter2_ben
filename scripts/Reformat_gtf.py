@@ -281,6 +281,13 @@ def get_NMD_detective_B_classification_number(NMD_detective_B_classification):
     except KeyError:
         return 8
 
+def get_NMD_detective_B_classification_color(NMD_detective_B_classification):
+    OrdinalDict = {"Last exon":"#08519c","Start proximal":"#6baed6","50 nt rule":"#c6dbef", "Long exon":"#fcbba1","Trigger NMD":"#de2d26", "No stop":"#a50f15", "No CDS":"#969696"}
+    try: 
+        return OrdinalDict[NMD_detective_B_classification]
+    except KeyError:
+        return "#252525"
+
 def calculate_frames(bedline):
     """Calculate the frame for each CDS block."""
     CDS_bed12 = bedline.cds()
@@ -445,8 +452,8 @@ def gtf_formatted_bedline_utr_start_stop(bedline, source='.', attributes_str='',
                 string_to_return += '\t'.join(gtf_fields) + '\n'
     return string_to_return
 
-def bed12_formatted_bedline(bedline, attributes_str=''):
-    bed12_fields = [bedline.chr, bedline.start, bedline.end, bedline.name, bedline.score, bedline.strand, bedline.cdsStart, bedline.cdsEnd, bedline.color, bedline.nEx, bedline.exLengths, bedline.exStarts]
+def bed12_formatted_bedline(bedline, attributes_str='', color=''):
+    bed12_fields = [bedline.chr, bedline.start, bedline.end, bedline.name, bedline.score, bedline.strand, bedline.cdsStart, bedline.cdsEnd, color, bedline.nEx, bedline.exLengths, bedline.exStarts]
     return '\t'.join([str(i) for i in bed12_fields]) + attributes_str + '\n'
     
 def get_transcript_length(bedline):
@@ -667,7 +674,7 @@ def main(args=None):
             _ = gtf_stringio.write(gtf_formatted_bedline_cds(transcript_out, source=source, attributes_str=transcript_attributes))
             _ = gtf_stringio.write(gtf_formatted_bedline_utr_start_stop(transcript_out, source=source, attributes_str=transcript_attributes))
             if bed_out_fh is not None:
-                _ = bed_out_fh.write(bed12_formatted_bedline(transcript, attributes_str='\t' + '\t'.join([transcript_name, gene_name, transcript_type_out, gene_type] + extra_attribute_values + [NMDFinderB_NoWhitespace, str(CDSLen)])))
+                _ = bed_out_fh.write(bed12_formatted_bedline(transcript, color=get_NMD_detective_B_classification_color(NMDFinderB), attributes_str='\t' + '\t'.join([gene_name, transcript_name, gene_type, transcript_type_out] + extra_attribute_values + [NMDFinderB_NoWhitespace, str(CDSLen)])))
             # gene_dict contains gene level information needed to properly write out parent (gene-level) lines based on child (transcript-level) lines
             gene_coords_dict[gene_name][transcript.chr][transcript.strand]['start'].add(transcript.start)
             gene_coords_dict[gene_name][transcript.chr][transcript.strand]['end'].add(transcript.end)
