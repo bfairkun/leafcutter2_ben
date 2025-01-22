@@ -459,6 +459,27 @@ def bed12_formatted_bedline(bedline, attributes_str='', color=''):
 def get_transcript_length(bedline):
     return sum([int(i) for i in bedline.exLengths.split(',')])
 
+def get_tx_stats(bedline, fasta_obj):
+    """
+    Return dict of potential useful stats/attributes about the transcript
+    """
+    dict_out = {"FiveUTR_nEx":0, "FiveUTR_len":0, "ThreeUTR_nEx":0, "ThreeUTR_len":0, "ThreeUTR_nEx_AfterFirst50":0, "CDSLen":0, "Introns":""}
+    FiveUTR = bedline.utr(which=5)
+    ThreeUTR = bedline.utr(which=3)
+    CDS = bedline.cds()
+    Introns = bedline.introns()
+    if CDS:
+        dict_out["CDSLen"] = get_transcript_length(CDS)
+    if FiveUTR:
+        dict_out["FiveUTR_nEx"] = FiveUTR.nEx
+        dict_out["FiveUTR_len"] = get_transcript_length(FiveUTR)
+    if ThreeUTR:
+        dict_out["ThreeUTR_nEx"] = ThreeUTR.nEx
+        dict_out["ThreeUTR_len"] = get_transcript_length(ThreeUTR)
+        dict_out["ThreeUTR_nEx_AfterFirst50"] = ThreeUTR.nEx - ThreeUTR.extract_sequence(fasta_obj)[0:50].count("|")
+    if Introns:
+        dict_out["Introns"]=','.join([f'{i.chr}:{i.start}-{i.end}:{i.strand}' for i in Introns.bed12tobed6()])
+    return dict_out
 
 def get_thickStart_thickStop_from_marked_seq(bedline, ORF_marked_sequence):
     CDS = re.search(r"\^\w+\*", ORF_marked_sequence.replace("|", ""))
@@ -664,17 +685,15 @@ def main(args=None):
                 transcript_type_out = "protein_coding" if transcript.cds() else "noncoding"
             elif  args.infer_transcript_type_approach == 'C':
                 transcript_type_out = "protein_coding" if NMDFinderB_number < args.NMDetectiveB_coding_threshold else "noncoding"
-            if transcript_out.cds():
-                CDSLen = get_transcript_length(transcript_out.cds())
-            else:
-                CDSLen = 0
-            transcript_attributes += f' transcript_type "{transcript_type_out}"; tag "NMDFinderB:{NMDFinderB_NoWhitespace}"; tag "CDSLen:{CDSLen}";'
-            _ = gtf_stringio.write(gtf_formatted_bedline_tx(transcript_out, source=source, attributes_str=transcript_attributes))
+            extra_calculated_transcript_attributes = get_tx_stats(transcript_out, fasta_obj)
+            transcript_attributes += f' transcript_type "{transcript_type_out}"; tag "NMDFinderB:{NMDFinderB_NoWhitespace}";'
+            transcript_attributes_longer = transcript_attributes + ' ' + '; '.join([f'tag "{k}":"{v}"' for k,v in extra_calculated_transcript_attributes.items()]) + ';'
+            _ = gtf_stringio.write(gtf_formatted_bedline_tx(transcript_out, source=source, attributes_str=transcript_attributes + transcript_attributes_longer))
             _ = gtf_stringio.write(gtf_formatted_bedline_exons(transcript_out, source=source, attributes_str=transcript_attributes))
             _ = gtf_stringio.write(gtf_formatted_bedline_cds(transcript_out, source=source, attributes_str=transcript_attributes))
             _ = gtf_stringio.write(gtf_formatted_bedline_utr_start_stop(transcript_out, source=source, attributes_str=transcript_attributes))
             if bed_out_fh is not None:
-                _ = bed_out_fh.write(bed12_formatted_bedline(transcript, color=get_NMD_detective_B_classification_color(NMDFinderB), attributes_str='\t' + '\t'.join([gene_name, transcript_name, gene_type, transcript_type_out] + extra_attribute_values + [NMDFinderB_NoWhitespace, str(CDSLen)])))
+                _ = bed_out_fh.write(bed12_formatted_bedline(transcript, color=get_NMD_detective_B_classification_color(NMDFinderB), attributes_str='\t' + '\t'.join([gene_name, transcript_name, gene_type, transcript_type_out] + [NMDFinderB_NoWhitespace] + [str(i) for i in extra_calculated_transcript_attributes.values()] + extra_attribute_values)))
             # gene_dict contains gene level information needed to properly write out parent (gene-level) lines based on child (transcript-level) lines
             gene_coords_dict[gene_name][transcript.chr][transcript.strand]['start'].add(transcript.start)
             gene_coords_dict[gene_name][transcript.chr][transcript.strand]['end'].add(transcript.end)
@@ -718,9 +737,11 @@ def main(args=None):
 
 if __name__ == "__main__":
     if hasattr(sys, 'ps1'):
-        main("-i /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.gtf -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.bed".split(' '))
-        main("-i scratch/Mouse_UCSC.10K.bed -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
-        main("-i Maz -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
+        # main("-i /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.gtf -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.bed".split(' '))
+        # main("-i scratch/Mouse_UCSC.10K.bed -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
+        # main("-i Maz -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
         # main("-i scratch/TRNAA.gtf -o scratch/TRNAA_reformated.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -v -infer_gene_type_approach B -infer_transcript_type_approach B -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
+        main("-i /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -o scratch/test.gtf -bed12_out scratch/test.bed -n 10000 -v -infer_gene_type_approach B -infer_transcript_type_approach B -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
+
     else:
         main()
