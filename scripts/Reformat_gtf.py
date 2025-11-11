@@ -206,7 +206,6 @@ def insert_marks_for_first_ORF(sequence, require_STOP=True, min_ORF_len=0):
     else:
         regex = r"^.*?(\|?A\|?T\|?G\|?(?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)\|?[ACGTN]\|?[ACGTN]\|?[ACGTN]){" + str(min_ORF_len) + r",}((?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A))?).*$"
     first_ORF_match = re.match(regex, sequence, flags=re.IGNORECASE)
-    # import pdb; pdb.set_trace()
     if first_ORF_match:
         start_codon_pos = first_ORF_match.start(1)
         if first_ORF_match.group(2):
@@ -238,6 +237,96 @@ def insert_marks_for_defined_ORF(sequence, start_codon_pos=None):
         return sequence
 # insert_marks_for_defined_ORF("GGGATGAAAGGGAAA|GGG|T|AA|GGGAAA", 3)
 # insert_marks_for_defined_ORF("GGGATGAAAGGGAAA|GGG|TT|AA|GGGAAA", 3)
+
+def find_upstream_orfs(sequence, bedline):
+    """
+    Find all upstream ORFs in a sequence marked with '^mainORF*'
+    Uses single regex approach for clarity, similar to other ORF-finding functions
+    
+    Args:
+        sequence (str): Sequence with '^' marking main ORF start and '*' marking end
+        bedline: bedparse.bedline object for coordinate conversion
+    
+    Returns:
+        tuple: (genomic_positions, classifications, lengths, relative_positions)
+    """
+    
+    # Find main ORF position
+    main_orf_match = re.search(r'\^', sequence)
+    if not main_orf_match:
+        return "", "", "", ""
+    
+    main_orf_start = main_orf_match.start()
+    upstream_sequence = sequence[:main_orf_start]
+    
+    # Single regex to find all potential ORFs (ATG to stop codon or end)
+    # This matches: ATG + (non-stop codons)* + (stop codon)?
+    # Using positive lookahead to find overlapping matches, similar to your insert_marks_for_longest_ORF
+    orf_regex = r"(?=(\|?A\|?T\|?G\|?(?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)\|?[ACGTN]\|?[ACGTN]\|?[ACGTN])*(?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)?))"
+    
+    all_orfs = re.findall(orf_regex, upstream_sequence, flags=re.IGNORECASE)
+    
+    # Group by reading frame and keep longest per frame
+    frame_orfs = {}  # frame -> (start_pos, orf_sequence, length)
+    
+    for orf_sequence in all_orfs:
+        # Find start position of this ORF in upstream sequence
+        orf_start_pos = upstream_sequence.find(orf_sequence)
+        
+        # Calculate reading frame based on clean position
+        clean_orf_start = len(re.sub(r'[\^\|\*]', '', sequence[:orf_start_pos]))
+        orf_frame = clean_orf_start % 3
+        
+        # Calculate length in amino acids
+        clean_orf_sequence = re.sub(r'[\^\|\*]', '', orf_sequence)
+        aa_length = len(clean_orf_sequence) // 3
+        
+        # Keep longest ORF per frame
+        if orf_frame not in frame_orfs or aa_length > frame_orfs[orf_frame][2]:
+            frame_orfs[orf_frame] = (orf_start_pos, orf_sequence, aa_length)
+    
+    # Process results
+    genomic_positions = []
+    classifications = []
+    lengths = []
+    relative_positions = []
+    
+    # Calculate main ORF frame for comparison
+    clean_main_start = len(re.sub(r'[\^\|\*]', '', sequence[:main_orf_start]))
+    main_frame = clean_main_start % 3
+    
+    for orf_frame, (orf_start_pos, orf_sequence, aa_length) in frame_orfs.items():
+        # Skip same-frame ORFs
+        if orf_frame == main_frame:
+            continue
+            
+        # Classify based on whether ORF ends before main ORF
+        orf_end_pos = orf_start_pos + len(orf_sequence)
+        if orf_end_pos <= main_orf_start:
+            classification = "uORF"
+        else:
+            classification = "Overlapping_uORF"
+        
+        # Convert to genomic coordinates - ensure it's a proper integer
+        clean_transcript_pos = len(re.sub(r'[\^\|\*]', '', sequence[:orf_start_pos]))
+        genomic_pos = get_absolute_pos(bedline, clean_transcript_pos)
+        
+        # Calculate relative position
+        relative_pos = clean_transcript_pos - clean_main_start
+        
+        # Store results - make sure we're storing proper strings
+        genomic_positions.append(str(int(genomic_pos)))  # Force integer conversion
+        classifications.append(str(classification))
+        lengths.append(str(int(aa_length)))             # Force integer conversion  
+        relative_positions.append(str(int(relative_pos))) # Force integer conversion
+    
+    # Return comma-separated strings - handle empty case
+    return (
+        ",".join(genomic_positions) if genomic_positions else "",
+        ",".join(classifications) if classifications else "", 
+        ",".join(lengths) if lengths else "",
+        ",".join(relative_positions) if relative_positions else ""
+    )
 
 def Is_bedline_complete(bedline):
     """
@@ -551,7 +640,7 @@ def add_gene_type_to_gtf(gtf_io, gene_type_dict):
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Helper script to reformat GTF file for compatibility with SpliceJunctionClassifier.py. More specifically, for a GTF to be compatible with that script, each gene feature and transcript feature must have a 'gene_type' and 'gene_name' attributes where 'gene_type' attribute value is 'protein_coding' for protein coding genes, and 'gene_name' attribute value is unique for each gene. Each child transcript feature must also have 'transcript_type' and 'transcript_name' attributes, where 'transcript_type' is 'protein_coding' for protein_coding (productive) transcript isoforms. Also, each protein_coding isoform must have a child 'exon' 'CDS', 'start_codon' and 'stop_codon' features (which also have the gene_type, gne_name, transcript_type, and transcript_name attributes of their parent features). As in Gencode v43 GTFs, transcripts that are not 'protein_coding' may also have 'CDS', 'start_codon' and 'start_codon' child features but if the transcript_type attribute is not 'protein_coding', these will not determine inclusion into the set of productive start/stop codons by SpliceJunctionClassifier.py. Furthermore, this script adds NMDetectiveB attributes to the transcript (see options for this feature). This is useful in cases when a GTF may be missing 'transcript_type' attribute, and if it is even missing 'CDS' features, this script can add the 'CDS', 'start_codon', and 'stop_codon' features after attempting to translate the transcript sequence and assign values to the 'transcript_type' attribute (eg, 'protein_coding' if NMDetectiveB result is 'Last exon' and 'noncoding if NMDetectiveB result is 'Trigger NMD'). This script also optionally can output bed12 file for each transcript. I have tested this on some GTF files from Gencode, Ensembl, and UCSC. Depending on the exact nature (eg attribute names) in the input GTF, you may have to alter some options to make the output suitable for SpliceJunctionClassifier.py.")
     parser.add_argument('-i', dest='transcripts_in', required=True, help='Input file containing transcript structures. Can be GTF format or BED12 format (see -input_type). Gzipped files (.gz) are automatically detected and supported.')
-    parser.add_argument('-o', dest='gtf_out', required=True, help='Output GTF file')
+    parser.add_argument('-o', dest='gtf_out', help='Output GTF file (optional if -bed12_out is specified)')
     parser.add_argument('-input_type', dest='input_type', choices=['gtf', 'bed12'], default='gtf', help='"-i" input file that contains transcript structures can be either gtf format, or bed12 format. If bed12 format, use --bed12_column_indexes to specify column mapping. default: "%(default)s"')
     parser.add_argument('-fa', dest='fasta_in', required=True, help='Input FASTA file')
     parser.add_argument('-bed12_out', dest='bed12_out', help='Optional bed12 out. One line per transcript. Attributes as extra columns')
@@ -567,6 +656,7 @@ def parse_args(args=None):
                         help='Extra transcript attributes (comma delimited quoted string). default: "%(default)s"')
     parser.add_argument('-NMDetectiveB_coding_threshold', dest='NMDetectiveB_coding_threshold', type=int, choices=[1,2,3,4,5,6,7], default=5, help='NMDetectiveB classifies each transcript into 7 ordinal categories, from the most coding potential to the least coding potential: (1) Last exon (2) Start proximal (3) 50nt rule (4) Long exon (5) Trigger NMD (6) No stop (7) No CDS. Transcripts with classified as this NMDetective value or greater will be assigned transcript_type attribute value of "noncoding", while others will be value of "protein_coding". default: "%(default)s"')
     parser.add_argument('-translation_approach', dest='translation_approach', choices=['A', 'B', 'C', 'D', 'E'], default='B', help='Approach to use NMDetective to annotate CDS in output for genes where gene_biotype/gene_type == "protein_coding", some of which may not have annotated CDS in input (eg transcript_type=="processed_transcript"). Possible approaches: (A) using annotated ORF if ORF is present in input with 5UTR and 3UTR. If 3UTR is present and 5UTR is absent (suggesting stop codon is annotated but start codon may be outside of the transcript bounds), search for longest ORF within transcript bounds where a start codon is not required at the beginning of ORF. Similarly, if 5UTR is present but 3UTR is absent, search for longest ORF without requiring stop codon. If neither UTR is present, or if no CDS is annotated in input, search for longest ORF, not requiring start or stop within transcript bounds. I think this approach might be useful to correctly identify the ORF, even if transcript bounds are not accurate, but it has the downside that true "processed_transcripts" with a internal TSS that eliminates the correct start codon, may be erronesously be classified as "Last exon" (ie productive) transcripts by NMDFinderB. (B) Use only annotated CDS. In effect, output gtf is the same except start_codon and stop_codon features are added even if not present in input. This would be useful for dealing with "processed_transcripts" properly by NMDFinder, but I havent checked whether CDS annotations in poorly annotated species (eg lamprey, chicken, etc) are reasonable, which could be a problem for Yangs script. (C) use annotated CDS if present, and use first ATG if no CDS present (minimum ORF length of 30 codons, not including start or stop). (D) Same as (C) but no minimum ORF length. (E) Use first ORF with minimum length > 42, regardless of annotation')
+    parser.add_argument('--include_uorf_analysis', action='store_true', help='Include upstream ORF (uORF) analysis in output. Adds uORF_genomic_positions, uORF_classifications, uORF_lengths_aa, and uORF_relative_positions attributes.', default=False)
     parser.add_argument('-v', '--verbose', action='store_true', help='Increase verbosity')
     return parser.parse_args(args)
 
@@ -579,13 +669,24 @@ def main(args=None):
     args = parse_args(args)
     setup_logging(args.verbose)
 
+    # Check that at least one output is specified
+    if not args.gtf_out and not args.bed12_out:
+        raise ValueError("At least one output must be specified: -o (GTF output) or -bed12_out (BED output)")
+
     # Validation for BED12 input
     if args.input_type == "bed12" and not args.bed12_column_indexes:
         raise ValueError("--bed12_column_indexes is required when input_type is bed12")
 
     # Example usage of the parsed arguments
     logging.info("Input transcript file: %s", args.transcripts_in)
-    logging.info("Output GTF file: %s", args.gtf_out)
+    if args.gtf_out:
+        logging.info("Output GTF file: %s", args.gtf_out)
+    else:
+        logging.info("GTF output: disabled")
+    if args.bed12_out:
+        logging.info("Output BED file: %s", args.bed12_out)
+    else:
+        logging.info("BED output: disabled")
     logging.info("Input FASTA file: %s", args.fasta_in)
     if args.extra_attributes:
         extra_attributes = args.extra_attributes.split(',')
@@ -644,14 +745,45 @@ def main(args=None):
     logging.info(f'Read in {NumTrancsripts} from input.')
 
     logging.info(f'Processing transcripts.')
-    gtf_stringio = StringIO()
-    # Initialize an empty dictionary to keep coordinates of each transcript for each gene. Will need to write out gene coordinates as most extensive span of child transcripts on each chromosome:strand pair, because some genes appear on more than one chromosome, (eg X and Y in Gencode gtf), or even on the same chromosome but different strands (eg some TRNAA gene appears on chr6 + strand and chr6 - strand in human RefSeq annotations from UCSC)
-    gene_coords_dict = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda : defaultdict(set))))
-    # gene_coords_dict[gene_name][transcript.chr][transcript.strand]['end'] = SetOfTranscriptEnds
+    
+    # Initialize GTF-specific variables only if GTF output is requested
+    if args.gtf_out:
+        gtf_stringio = StringIO()
+        # Initialize an empty dictionary to keep coordinates of each transcript for each gene. Will need to write out gene coordinates as most extensive span of child transcripts on each chromosome:strand pair, because some genes appear on more than one chromosome, (eg X and Y in Gencode gtf), or even on the same chromosome but different strands (eg some TRNAA gene appears on chr6 + strand and chr6 - strand in human RefSeq annotations from UCSC)
+        gene_coords_dict = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda : defaultdict(set))))
+        # gene_coords_dict[gene_name][transcript.chr][transcript.strand]['end'] = SetOfTranscriptEnds
+    else:
+        gtf_stringio = None
+        gene_coords_dict = None
+    
+    # Always initialize gene_types_dict - needed for both GTF and BED output
     gene_types_dict = defaultdict(lambda: defaultdict((set)))
     bed_out_fh = None
     if args.bed12_out:
         bed_out_fh = open(args.bed12_out, 'w')
+        # Write BED file header
+        bed_header_fields = [
+            "chr", "start", "end", "name", "score", "strand", 
+            "thickStart", "thickEnd", "color", "blockCount", "blockSizes", "blockStarts",
+            "gene_name", "transcript_name", "gene_type", "transcript_type", "NMDFinderB"
+        ]
+        # Add extra calculated attributes to header
+        extra_calc_attrs = ["FiveUTR_nEx", "FiveUTR_len", "ThreeUTR_nEx", "ThreeUTR_len", 
+                           "ThreeUTR_nEx_AfterFirst50", "CDSLen", "Introns"]
+        bed_header_fields.extend(extra_calc_attrs)
+        
+        # Conditionally add uORF attributes to header ONLY if analysis is enabled
+        if args.include_uorf_analysis:
+            uorf_attrs = ["uORF_genomic_positions", "uORF_classifications", 
+                          "uORF_lengths_aa", "uORF_relative_positions"]
+            bed_header_fields.extend(uorf_attrs)
+        
+        # Add extra attributes from input (this is what you were missing!)
+        if args.extra_attributes:
+            bed_header_fields.extend(extra_attributes)
+        
+        # Write header line
+        bed_out_fh.write("#" + "\t".join(bed_header_fields) + "\n")
     for i,l in enumerate(bed12.splitlines()):
         if i >= 0:
             if i % 1000 == 0: logging.debug(f'processed {i} trancsripts for output...')
@@ -736,41 +868,80 @@ def main(args=None):
             elif  args.infer_transcript_type_approach == 'C':
                 transcript_type_out = "protein_coding" if NMDFinderB_number < args.NMDetectiveB_coding_threshold else "noncoding"
             extra_calculated_transcript_attributes = get_tx_stats(transcript_out, fasta_obj)
-            transcript_attributes += f' transcript_type "{transcript_type_out}"; tag "NMDFinderB:{NMDFinderB_NoWhitespace}";'
-            transcript_attributes_longer = transcript_attributes + ' ' + '; '.join([f'tag "{k}":"{v}"' for k,v in extra_calculated_transcript_attributes.items()]) + ';'
-            _ = gtf_stringio.write(gtf_formatted_bedline_tx(transcript_out, source=source, attributes_str=transcript_attributes + transcript_attributes_longer))
-            _ = gtf_stringio.write(gtf_formatted_bedline_exons(transcript_out, source=source, attributes_str=transcript_attributes))
-            _ = gtf_stringio.write(gtf_formatted_bedline_cds(transcript_out, source=source, attributes_str=transcript_attributes))
-            _ = gtf_stringio.write(gtf_formatted_bedline_utr_start_stop(transcript_out, source=source, attributes_str=transcript_attributes))
+            
+            # Build all transcript attributes in one place
+            transcript_attributes = f'transcript_name "{transcript_name}"; gene_name "{gene_name}"; transcript_type "{transcript_type_out}"; tag "NMDFinderB:{NMDFinderB_NoWhitespace}";'
+
+            # Add extra calculated attributes
+            extra_calculated_transcript_attributes = get_tx_stats(transcript_out, fasta_obj)
+            for k, v in extra_calculated_transcript_attributes.items():
+                transcript_attributes += f' tag "{k}":"{v}";'
+
+            # if transcript.name == "ENST00000433179.4": breakpoint()
+            # Conditionally add upstream ORF analysis
+            if args.include_uorf_analysis:
+                uorf_genomic_pos, uorf_classes, uorf_lengths, uorf_relative_pos = find_upstream_orfs(sequence, transcript_out)
+                transcript_attributes += f' tag "uORF_genomic_positions":"{uorf_genomic_pos}";'
+                transcript_attributes += f' tag "uORF_classifications":"{uorf_classes}";'
+                transcript_attributes += f' tag "uORF_lengths_aa":"{uorf_lengths}";'
+                transcript_attributes += f' tag "uORF_relative_positions":"{uorf_relative_pos}";'
+
+            # Write to GTF only if GTF output is enabled
+            if args.gtf_out:
+                _ = gtf_stringio.write(gtf_formatted_bedline_tx(transcript_out, source=source, attributes_str=transcript_attributes))
+                _ = gtf_stringio.write(gtf_formatted_bedline_exons(transcript_out, source=source, attributes_str=transcript_attributes))
+                _ = gtf_stringio.write(gtf_formatted_bedline_cds(transcript_out, source=source, attributes_str=transcript_attributes))
+                _ = gtf_stringio.write(gtf_formatted_bedline_utr_start_stop(transcript_out, source=source, attributes_str=transcript_attributes))
+
+            # For BED output, create a clean list of values
             if bed_out_fh is not None:
-                _ = bed_out_fh.write(bed12_formatted_bedline(transcript, color=get_NMD_detective_B_classification_color(NMDFinderB), attributes_str='\t' + '\t'.join([gene_name, transcript_name, gene_type, transcript_type_out] + [NMDFinderB_NoWhitespace] + [str(i) for i in extra_calculated_transcript_attributes.values()] + extra_attribute_values)))
-            # gene_dict contains gene level information needed to properly write out parent (gene-level) lines based on child (transcript-level) lines
-            gene_coords_dict[gene_name][transcript.chr][transcript.strand]['start'].add(transcript.start)
-            gene_coords_dict[gene_name][transcript.chr][transcript.strand]['end'].add(transcript.end)
+                bed_extra_fields = [gene_name, transcript_name, gene_type, transcript_type_out, NMDFinderB_NoWhitespace]
+                bed_extra_fields.extend([str(v) for v in extra_calculated_transcript_attributes.values()])
+                
+                # Conditionally add uORF data to BED output ONLY if analysis is enabled
+                if args.include_uorf_analysis:
+                    bed_extra_fields.extend([uorf_genomic_pos, uorf_classes, uorf_lengths, uorf_relative_pos])
+                
+                bed_extra_fields.extend(extra_attribute_values)
+                
+                _ = bed_out_fh.write(bed12_formatted_bedline(transcript, 
+                                                            color=get_NMD_detective_B_classification_color(NMDFinderB), 
+                                                            attributes_str='\t' + '\t'.join(bed_extra_fields)))
+            # Track gene information
+            # Always track gene types (needed for both GTF and BED output)
             gene_types_dict[gene_name]['gene_types_in_input'].add(gene_type)
             gene_types_dict[gene_name]['trancscript_types'].add(transcript_type_out)
+            
+            # Only track gene coordinates if GTF output is enabled
+            if args.gtf_out:
+                # gene_dict contains gene level information needed to properly write out parent (gene-level) lines based on child (transcript-level) lines
+                gene_coords_dict[gene_name][transcript.chr][transcript.strand]['start'].add(transcript.start)
+                gene_coords_dict[gene_name][transcript.chr][transcript.strand]['end'].add(transcript.end)
     if bed_out_fh is not None: bed_out_fh.close()
 
-    logging.info('Writing gene (parent) feature coordiantes and based on child (transcript) feature coordinates')
-    for gene, chrom_dict in gene_coords_dict.items():
-        for chrom, strand_dict in chrom_dict.items():
-            for StrandIteration, (strand, info_dict) in enumerate(strand_dict.items()):
-                min_start = min(info_dict['start'])
-                max_stop = max(info_dict['end'])
-                _ = gtf_stringio.write(f'{chrom}\tinput_gtf\tgene\t{min_start+1}\t{max_stop}\t.\t{strand}\t.\tgene_name "{gene}";\n')
-            if StrandIteration > 0:
-                logging.warning(f"Transcripts for gene {gene} on {chrom} are on different strands. Writing {gene} gene feature on {chrom} for more than one strand")
+    # Only process GTF output if it was requested
+    if args.gtf_out:
+        logging.info('Writing gene (parent) feature coordiantes and based on child (transcript) feature coordinates')
+        for gene, chrom_dict in gene_coords_dict.items():
+            for chrom, strand_dict in chrom_dict.items():
+                for StrandIteration, (strand, info_dict) in enumerate(strand_dict.items()):
+                    min_start = min(info_dict['start'])
+                    max_stop = max(info_dict['end'])
+                    _ = gtf_stringio.write(f'{chrom}\tinput_gtf\tgene\t{min_start+1}\t{max_stop}\t.\t{strand}\t.\tgene_name "{gene}";\n')
+                if StrandIteration > 0:
+                    logging.warning(f"Transcripts for gene {gene} on {chrom} are on different strands. Writing {gene} gene feature on {chrom} for more than one strand")
 
-    logging.info('Writing gene_type attributes')
-    gene_types_dict_final = dict()
-    for gene, info_dict in gene_types_dict.items():
-        if args.infer_gene_type_approach == "A":
-            if len(info_dict['gene_types_in_input']) != 1: raise ValueError(f"{gene} does not have a single gene_type in input")
-            gene_types_dict_final[gene] = list(info_dict['gene_types_in_input'])[0]
-        elif args.infer_gene_type_approach == "B":
-            gene_types_dict_final[gene] = "protein_coding" if "protein_coding" in info_dict['trancscript_types'] else "noncoding"
-    # Write out gene_type attributes
-    gtf_stringio_updated = add_gene_type_to_gtf(gtf_stringio, gene_types_dict_final)
+        logging.info('Writing gene_type attributes')
+        gene_types_dict_final = dict()
+        for gene, info_dict in gene_types_dict.items():
+            if args.infer_gene_type_approach == "A":
+                if len(info_dict['gene_types_in_input']) != 1: 
+                    raise ValueError(f"{gene} does not have a single gene_type in input")
+                gene_types_dict_final[gene] = list(info_dict['gene_types_in_input'])[0]
+            elif args.infer_gene_type_approach == "B":
+                gene_types_dict_final[gene] = "protein_coding" if "protein_coding" in info_dict['trancscript_types'] else "noncoding"
+        # Write out gene_type attributes
+        gtf_stringio_updated = add_gene_type_to_gtf(gtf_stringio, gene_types_dict_final)
 
     logging.info('sorting and writing out gtf')
     # output filehandle
@@ -794,7 +965,8 @@ if __name__ == "__main__":
         # main("-i scratch/Mouse_UCSC.10K.bed -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
         # main("-i Maz -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
         # main("-i scratch/TRNAA.gtf -o scratch/TRNAA_reformated.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -v -infer_gene_type_approach B -infer_transcript_type_approach B -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
-        main("-i /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -o scratch/test.gtf -bed12_out scratch/test.bed -n 10000 -v -infer_gene_type_approach B -infer_transcript_type_approach B -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
+        main("-i /project2/yangili1/bjf79/ReferenceGenomes/GRCh38_GencodeRelease44Comprehensive/Reference.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -bed12_out scratch/test.bed -n 1000000 -v -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_name -infer_gene_type_approach B".split(' '))
+        # main("-i scratch/COMMD5.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -o scratch/test.gtf -bed12_out scratch/test.bed -n 10000 -v -transcript_name_attribute_name transcript_name -gene_name_attribute_name gene_id".split(' '))
 
     else:
         main()
