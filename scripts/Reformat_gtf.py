@@ -550,14 +550,15 @@ def add_gene_type_to_gtf(gtf_io, gene_type_dict):
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Helper script to reformat GTF file for compatibility with SpliceJunctionClassifier.py. More specifically, for a GTF to be compatible with that script, each gene feature and transcript feature must have a 'gene_type' and 'gene_name' attributes where 'gene_type' attribute value is 'protein_coding' for protein coding genes, and 'gene_name' attribute value is unique for each gene. Each child transcript feature must also have 'transcript_type' and 'transcript_name' attributes, where 'transcript_type' is 'protein_coding' for protein_coding (productive) transcript isoforms. Also, each protein_coding isoform must have a child 'exon' 'CDS', 'start_codon' and 'stop_codon' features (which also have the gene_type, gne_name, transcript_type, and transcript_name attributes of their parent features). As in Gencode v43 GTFs, transcripts that are not 'protein_coding' may also have 'CDS', 'start_codon' and 'start_codon' child features but if the transcript_type attribute is not 'protein_coding', these will not determine inclusion into the set of productive start/stop codons by SpliceJunctionClassifier.py. Furthermore, this script adds NMDetectiveB attributes to the transcript (see options for this feature). This is useful in cases when a GTF may be missing 'transcript_type' attribute, and if it is even missing 'CDS' features, this script can add the 'CDS', 'start_codon', and 'stop_codon' features after attempting to translate the transcript sequence and assign values to the 'transcript_type' attribute (eg, 'protein_coding' if NMDetectiveB result is 'Last exon' and 'noncoding if NMDetectiveB result is 'Trigger NMD'). This script also optionally can output bed12 file for each transcript. I have tested this on some GTF files from Gencode, Ensembl, and UCSC. Depending on the exact nature (eg attribute names) in the input GTF, you may have to alter some options to make the output suitable for SpliceJunctionClassifier.py.")
-    parser.add_argument('-i', dest='gtf_in', required=True, help='Input GTF file. May alternatively use bed12 file to define input transcripts (see "-input_type" argument)')
+    parser.add_argument('-i', dest='transcripts_in', required=True, help='Input file containing transcript structures. Can be GTF format or BED12 format (see -input_type). Gzipped files (.gz) are automatically detected and supported.')
     parser.add_argument('-o', dest='gtf_out', required=True, help='Output GTF file')
-    parser.add_argument('-input_type', dest='input_type', choices=['gtf', 'bed12'], default='gtf', help='"-i" input file that contains transcript structures can be either gtf format, or bed12 format. If bed12 format, transcript_name, gene_name, transcript_type, and gene_type attributes must be added as columns 13, 14, 15, and 16, respectively. default: "%(default)s"')
+    parser.add_argument('-input_type', dest='input_type', choices=['gtf', 'bed12'], default='gtf', help='"-i" input file that contains transcript structures can be either gtf format, or bed12 format. If bed12 format, use --bed12_column_indexes to specify column mapping. default: "%(default)s"')
     parser.add_argument('-fa', dest='fasta_in', required=True, help='Input FASTA file')
     parser.add_argument('-bed12_out', dest='bed12_out', help='Optional bed12 out. One line per transcript. Attributes as extra columns')
+    parser.add_argument('-bed12_column_indexes', dest='bed12_column_indexes', nargs=4, type=int, metavar=('TRANSCRIPT_ID', 'GENE_ID', 'TRANSCRIPT_TYPE', 'GENE_TYPE'), help='When input_type is bed12, specify 1-based column indexes for transcript_id, gene_id, transcript_type, and gene_type (in that order). Required when input_type=bed12. Example: --bed12_column_indexes 13 14 15 16 or --bed12_column_indexes 4 4 4 4 to use BED name column for all.')
     parser.add_argument('-n', dest='n_lines', help='Number of lines to read in gtf. Useful for quick debugging, but reading only n lines may cause buggy behavior if a transcript feature line is processed but not all of its child (eg exon, or CDS) features', type=int)
-    parser.add_argument('-infer_transcript_type_approach', dest='infer_transcript_type_approach', choices=['A', 'B', 'C'], default='A', help='Approach to determine the transcript_type attribute value in output. (A) Use existing value. (B) Value is "protein_coding" if a the transcript contains child features of type "CDS". Value is "noncoding" otherwise. (C) Translate the transcript and use NMDetectiveB on the ORF. See -translation_approach and -NMDetectiveB_coding_threshold options to specify how this is done. default: "%(default)s"')
-    parser.add_argument('-infer_gene_type_approach', dest='infer_gene_type_approach', choices=['A', 'B'], default='A', help='Approach to determine the gene_type attribute value in output. (A) Use existing value. (B) Value is "protein_coding" if gene has any child transcripts have attribute transcript_type "protein_coding". Value is "noncoding" otherwise. default: "%(default)s"')
+    parser.add_argument('-infer_transcript_type_approach', dest='infer_transcript_type_approach', choices=['A', 'B', 'C'], default='B', help='Approach to determine the transcript_type attribute value in output. (A) Use existing value. (B) Value is "protein_coding" if a the transcript contains child features of type "CDS". Value is "noncoding" otherwise. (C) Translate the transcript and use NMDetectiveB on the ORF. See -translation_approach and -NMDetectiveB_coding_threshold options to specify how this is done. default: "%(default)s"')
+    parser.add_argument('-infer_gene_type_approach', dest='infer_gene_type_approach', choices=['A', 'B'], default='B', help='Approach to determine the gene_type attribute value in output. (A) Use existing value. (B) Value is "protein_coding" if gene has any child transcripts have attribute transcript_type "protein_coding". Value is "noncoding" otherwise. default: "%(default)s"')
     parser.add_argument('-transcript_type_attribute_name', dest='transcript_type_attribute_name', default='transcript_type', help='Name of the attribute in the input gtf file that defines the transcript_type attribute in the output file. Only relevant if -infer_transcript_type_approach==A. default: "%(default)s"')
     parser.add_argument('-gene_type_attribute_name', dest='gene_type_attribute_name', default='gene_type', help='Name of the attribute in the input gtf file that defines the gene_type attribute in the output file. Only relevant if -infer_gene_type_approach==A. default: "%(default)s"')
     parser.add_argument('-transcript_name_attribute_name', dest='transcript_name_attribute_name', default='transcript_name', help='Name of the attribute in the input gtf file that defines the transcript_name attribute in the output file. default: "%(default)s"')
@@ -578,29 +579,67 @@ def main(args=None):
     args = parse_args(args)
     setup_logging(args.verbose)
 
+    # Validation for BED12 input
+    if args.input_type == "bed12" and not args.bed12_column_indexes:
+        raise ValueError("--bed12_column_indexes is required when input_type is bed12")
+
     # Example usage of the parsed arguments
-    logging.info("Input GTF file: %s", args.gtf_in)
+    logging.info("Input transcript file: %s", args.transcripts_in)
     logging.info("Output GTF file: %s", args.gtf_out)
     logging.info("Input FASTA file: %s", args.fasta_in)
     if args.extra_attributes:
         extra_attributes = args.extra_attributes.split(',')
         logging.info("Extra attributes: %s", extra_attributes)
     else:
+        extra_attributes = []
         logging.info("No extra attributes provided.")
     
     # Open the FASTA file using pysam
     fasta_obj = pysam.FastaFile(args.fasta_in)
 
-    required_attributes = ','.join([args.transcript_name_attribute_name, args.gene_name_attribute_name, args.transcript_type_attribute_name, args.gene_type_attribute_name])
-    attributes_to_extract = ','.join([required_attributes, args.extra_attributes])
-
-    # gtf2bed
-    logging.info(f'Reading in transcripts and converting transcripts to bedparse.bedline objects...')
+    # Handle attribute extraction based on input type and inference approaches
     if args.input_type == "gtf":
-        bed12 = run_bedparse_gtf2bed(args.gtf_in, '--extraFields', attributes_to_extract, n=args.n_lines)
+        # Build attributes to extract - handle missing transcript_type/gene_type gracefully
+        required_attributes = [args.transcript_name_attribute_name, args.gene_name_attribute_name]
+        
+        # Always try to extract type attributes (user's responsibility to use inference approaches)
+        required_attributes.extend([args.transcript_type_attribute_name, args.gene_type_attribute_name])
+        
+        attributes_to_extract = ','.join(required_attributes + extra_attributes)
+        
+        # gtf2bed
+        logging.info(f'Reading in transcripts and converting transcripts to bedparse.bedline objects...')
+        bed12 = run_bedparse_gtf2bed(args.transcripts_in, '--extraFields', attributes_to_extract, n=args.n_lines)
+        
     elif args.input_type == "bed12":
-        with open(args.gtf_in, 'r') as f:
-            bed12 = f.read()
+        logging.info(f'Reading BED12 input with column mapping: {args.bed12_column_indexes}')
+        
+        # Handle -n argument for BED12 input with gzip auto-detection
+        if args.n_lines is not None:
+            bed12_lines = []
+            open_func = gzip.open if args.transcripts_in.endswith('.gz') else open
+            mode = 'rt' if args.transcripts_in.endswith('.gz') else 'r'
+            with open_func(args.transcripts_in, mode) as f:
+                for i, line in enumerate(f):
+                    if i >= args.n_lines:
+                        break
+                    bed12_lines.append(line.rstrip('\n'))
+            bed12 = '\n'.join(bed12_lines)
+            logging.info(f'Reading first {args.n_lines} lines from BED12 file')
+        else:
+            open_func = gzip.open if args.transcripts_in.endswith('.gz') else open
+            mode = 'rt' if args.transcripts_in.endswith('.gz') else 'r'
+            with open_func(args.transcripts_in, mode) as f:
+                bed12 = f.read()
+        
+        # Validate column indexes against actual BED12 data
+        first_line = bed12.split('\n')[0].split('\t')
+        max_col_needed = max(args.bed12_column_indexes)
+        if len(first_line) < max_col_needed:
+            raise ValueError(f"BED12 file has {len(first_line)} columns but column index {max_col_needed} was specified")
+        
+        logging.info(f"BED12 column mapping: transcript_id=col{args.bed12_column_indexes[0]}, gene_id=col{args.bed12_column_indexes[1]}, transcript_type=col{args.bed12_column_indexes[2]}, gene_type=col{args.bed12_column_indexes[3]}")
+        
     NumTrancsripts = len(bed12.splitlines())
     logging.info(f'Read in {NumTrancsripts} from input.')
 
@@ -617,8 +656,19 @@ def main(args=None):
         if i >= 0:
             if i % 1000 == 0: logging.debug(f'processed {i} trancsripts for output...')
             lsplit = l.split('\t')
-            transcript_name, gene_name, transcript_type, gene_type = lsplit[12:16]
-            extra_attribute_values = lsplit[16:]
+            
+            # Handle attribute extraction based on input type
+            if args.input_type == "gtf":
+                # GTF input: attributes come from bedparse gtf2bed extraction (columns 12-15 + extras)
+                transcript_name, gene_name, transcript_type, gene_type = lsplit[12:16]
+                extra_attribute_values = lsplit[16:]
+            elif args.input_type == "bed12":
+                # BED12 input: use column mapping (convert from 1-based to 0-based indexing)
+                transcript_name = lsplit[args.bed12_column_indexes[0] - 1]  # transcript_id
+                gene_name = lsplit[args.bed12_column_indexes[1] - 1]        # gene_id 
+                transcript_type = lsplit[args.bed12_column_indexes[2] - 1]  # transcript_type
+                gene_type = lsplit[args.bed12_column_indexes[3] - 1]        # gene_type
+                extra_attribute_values = []  # BED12 doesn't have extra attributes by default
             transcript = bedparse.bedline(lsplit[0:12])
             if not Is_bedline_complete(transcript):
                 continue
@@ -725,14 +775,17 @@ def main(args=None):
     logging.info('sorting and writing out gtf')
     # output filehandle
     with open(args.gtf_out, 'w') as output_fh:
-        # transfer commented headers from original gtf
-        with open(args.gtf_in, 'r') as input_fh:
-            for l in input_fh:
-                if l.startswith('#'):
-                    _ = output_fh.write(l)
-                else:
-                    break
-            _ = output_fh.write(f"#! args: {args}\n")
+        # transfer commented headers from original input file (if GTF format)
+        if args.input_type == "gtf":
+            open_func = gzip.open if args.transcripts_in.endswith('.gz') else open
+            mode = 'rt' if args.transcripts_in.endswith('.gz') else 'r'
+            with open_func(args.transcripts_in, mode) as input_fh:
+                for l in input_fh:
+                    if l.startswith('#'):
+                        _ = output_fh.write(l)
+                    else:
+                        break
+        _ = output_fh.write(f"#! args: {args}\n")
         reorder_gtf(gtf_stringio_updated, output_fh, mode='a')
 
 if __name__ == "__main__":
