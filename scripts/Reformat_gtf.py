@@ -173,10 +173,13 @@ def reverse_complement(seq):
 bedparse.bedline.extract_sequence = extract_sequence
 bedparse.bedline.reverse_complement = staticmethod(reverse_complement)
 
-
-def insert_marks_for_longset_ORF(sequence, require_ATG=True, require_STOP=True):
+def insert_marks_for_longset_ORF(sequence, require_ATG=True, require_STOP=True, min_ORF_len=0):
     """
-    return sequence with "^" to mark start codon, "*" to mark stop for longest ORF. If not require_ATG, can start translation from beginning, which could be useful if transcript starts are not well defined. If not require_STOP, translation does not need stop codon at end. "|" characters (which I use mark splice junctions) are ignored, allowing codons to cross exon junctions.
+    return sequence with "^" to mark start codon, "*" to mark stop for longest ORF that meets minimum length requirement.
+    If not require_ATG, can start translation from beginning, which could be useful if transcript starts are not well defined. 
+    If not require_STOP, translation does not need stop codon at end. 
+    "|" characters (which I use mark splice junctions) are ignored, allowing codons to cross exon junctions.
+    min_ORF_len in codons after start codon.
     """
     if require_ATG and require_STOP:
         regex = r"(?=(\|?A\|?T\|?G\|?(?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)\|?[ACGTN]\|?[ACGTN]\|?[ACGTN])*(?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)))"
@@ -186,36 +189,76 @@ def insert_marks_for_longset_ORF(sequence, require_ATG=True, require_STOP=True):
         regex = r"(?=((?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)\|?[ACGTN]\|?[ACGTN]\|?[ACGTN])*(?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)))"
     else:
         regex = r"(?=(\|?(?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)\|?[ACGTN]\|?[ACGTN]\|?[ACGTN])*(?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)*))"
-    try:
-        longest_orf_match = max(re.findall(regex, sequence, flags=re.IGNORECASE), key = len)
-    except ValueError:
-        longest_orf_match = None
-    if longest_orf_match:
-        start_codon_pos = sequence.find(longest_orf_match)
-        stop_codon_pos = start_codon_pos + len(longest_orf_match)
-        return sequence[0:start_codon_pos] + "^" + longest_orf_match + "*" + sequence[stop_codon_pos:]
-    else:
-        return sequence
     
-def insert_marks_for_first_ORF(sequence, require_STOP=True, min_ORF_len=0):
-    """
-    return sequence with "^" to mark start codon, "*" to mark stop for longest ORF. If not require_STOP, translation does not need stop codon at end. "|" characters (which I use mark splice junctions) are ignored, allowing codons to cross exon junctions. min_ORF_len in codons after start codon.
-    """
-    if require_STOP:
-        regex = r"^.*?(\|?A\|?T\|?G\|?(?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)\|?[ACGTN]\|?[ACGTN]\|?[ACGTN]){" + str(min_ORF_len) + r",}((?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A))).*$"
-    else:
-        regex = r"^.*?(\|?A\|?T\|?G\|?(?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)\|?[ACGTN]\|?[ACGTN]\|?[ACGTN]){" + str(min_ORF_len) + r",}((?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A))?).*$"
-    first_ORF_match = re.match(regex, sequence, flags=re.IGNORECASE)
-    if first_ORF_match:
-        start_codon_pos = first_ORF_match.start(1)
-        if first_ORF_match.group(2):
-            stop_codon_pos = first_ORF_match.end(1)
-            return sequence[0:start_codon_pos] + "^" + first_ORF_match.group(1) + "*" + sequence[stop_codon_pos:]
+    all_orfs = re.findall(regex, sequence, flags=re.IGNORECASE)
+    
+    # Filter ORFs by minimum length and find the longest
+    valid_orfs = []
+    for orf_match in all_orfs:
+        # Calculate ORF length without splice junction markers
+        clean_orf = re.sub(r'[\^\|\*]', '', orf_match)
+        orf_length_codons = len(clean_orf) // 3
+        
+        if orf_length_codons >= min_ORF_len:
+            valid_orfs.append((orf_match, len(orf_match)))
+    
+    if valid_orfs:
+        # Get the longest valid ORF
+        longest_orf_match = max(valid_orfs, key=lambda x: x[1])[0]
+        start_codon_pos = sequence.find(longest_orf_match)
+        
+        # Handle marking based on whether stop codon is present/required
+        if require_STOP or re.search(r'(?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)$', longest_orf_match, flags=re.IGNORECASE):
+            # Has stop codon or stop required - mark both start and stop
+            stop_codon_pos = start_codon_pos + len(longest_orf_match)
+            return sequence[0:start_codon_pos] + "^" + longest_orf_match + "*" + sequence[stop_codon_pos:]
         else:
+            # No stop codon and stop not required - mark start and let ORF continue to end
             return sequence[0:start_codon_pos] + "^" + sequence[start_codon_pos:]
     else:
         return sequence
+insert_marks_for_longset_ORF("ggg|ATGATG|aaaCatgCC|TA|A|gggAAACCCAAACCCAAACCCAAAccc", require_ATG=True, require_STOP=True, min_ORF_len=4)
+
+def insert_marks_for_first_ORF(sequence, require_STOP=True, min_ORF_len=0):
+    """
+    return sequence with "^" to mark start codon, "*" to mark stop for first ORF. If not require_STOP, translation does not need stop codon at end. "|" characters (which I use mark splice junctions) are ignored, allowing codons to cross exon junctions. min_ORF_len in codons after start codon.
+    """
+    # Build regex with single capture group for entire ORF
+    if require_STOP:
+        regex = r"^.*?(\|?A\|?T\|?G\|?(?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)\|?[ACGTN]\|?[ACGTN]\|?[ACGTN]){" + str(min_ORF_len-2) + r",}?(?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)).*$"
+    else:
+        regex = r"^.*?(\|?A\|?T\|?G\|?(?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)(?:\|?[ACGTN]\|?[ACGTN]\|?[ACGTN])(?<!$)){" + str(min_ORF_len-2) + r",}(?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A|.{3,5}$)).*$"
     
+    # Find first matching ORF directly
+    first_orf_match = re.match(regex, sequence, flags=re.IGNORECASE)
+    
+    if first_orf_match:
+        orf_sequence = first_orf_match.group(1)
+        start_codon_pos = first_orf_match.start(1)
+        
+        # Check if ORF ends with stop codon
+        if require_STOP or re.search(r'(?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)$', orf_sequence, flags=re.IGNORECASE):
+            # Has stop codon - mark both start and stop
+            orf_end_pos = start_codon_pos + len(orf_sequence)
+            return sequence[0:start_codon_pos] + "^" + orf_sequence + "*" + sequence[orf_end_pos:]
+        else:
+            # No stop codon - mark start and continue to end
+            return sequence[0:start_codon_pos] + "^" + sequence[start_codon_pos:]
+    
+    # No valid ORF found
+    return sequence
+# # should mark at ORF of at least 4 codons (including start and stop)
+# insert_marks_for_first_ORF("ggg|ATG|aaaCCC|TA|A|ggg", require_STOP=True, min_ORF_len=4)
+# # should marks an ORF of at least 4 codons including start and stop
+# insert_marks_for_first_ORF("ggg|ATG|aaaCCC|TA|A|ggg", require_STOP=False, min_ORF_len=4)
+# # should does not mark the ORF of only 3 codons including start and stop
+# insert_marks_for_first_ORF("ggg|ATG|aaa|TA|A|ggg", require_STOP=False, min_ORF_len=4)
+# # should mark an ORF of at least 4 codons without a stop codon
+# insert_marks_for_first_ORF("ggg|ATG|aaaCCC|ggg", require_STOP=False, min_ORF_len=4)
+# # should not mark an ORF, when it is only 2 non-start codons.
+# insert_marks_for_first_ORF("ggg|ATG|aaaCCC|", require_STOP=False, min_ORF_len=4)
+
+
 def insert_marks_for_defined_ORF(sequence, start_codon_pos=None):
     """
     return sequence with "^" to mark start codon at provided string position, "*" to mark stop for longest ORF. If no stop codon is found, then no * will be inserted.
@@ -238,10 +281,86 @@ def insert_marks_for_defined_ORF(sequence, start_codon_pos=None):
 # insert_marks_for_defined_ORF("GGGATGAAAGGGAAA|GGG|T|AA|GGGAAA", 3)
 # insert_marks_for_defined_ORF("GGGATGAAAGGGAAA|GGG|TT|AA|GGGAAA", 3)
 
-def find_upstream_orfs(sequence, bedline):
+def find_uorfs(seq):
+    junk = {"|", "^", "*"}
+    stops = {"TAA", "TAG", "TGA"}
+
+    # --- strip junk for matching, but keep map back to original ---
+    clean = []
+    clean_map = []
+    for i, c in enumerate(seq):
+        if c not in junk:
+            clean.append(c.upper())
+            clean_map.append(i)
+
+    clean = "".join(clean)
+
+    # --- main ORF start boundary in clean coordinates ---
+    main_start_pos = seq.index("^")
+    main_start_clean = sum(1 for x in seq[:main_start_pos] if x not in junk)
+
+    raw_hits = []
+
+    # --- find all start→stop ORFs before ^ ---
+    for i in range(0, main_start_clean - 2):
+        if clean[i:i+3] == "ATG":
+
+            # find first in-frame stop
+            stop_pos = None
+            for j in range(i+3, len(clean)-2, 3):
+                codon = clean[j:j+3]
+                if codon in stops:
+                    stop_pos = j + 3  # exclusive
+                    break
+            if stop_pos is None:
+                continue
+
+            start_orig = clean_map[i]
+            end_orig   = clean_map[stop_pos-1]
+
+            raw_hits.append((i, stop_pos, start_orig, end_orig))
+
+    # ==========================================================
+    #     REMOVE in-frame ORFs that are fully contained inside
+    # ==========================================================
+
+    # Group ORFs by frame
+    by_frame = {0: [], 1: [], 2: []}
+    for cstart, cend, ostart, oend in raw_hits:
+        frame = cstart % 3
+        by_frame[frame].append((cstart, cend, ostart, oend))
+
+    final_hits = []
+
+    for frame, hits in by_frame.items():
+        # sort by cleaned-coordinate length descending
+        hits.sort(key=lambda x: (x[1] - x[0]), reverse=True)
+
+        kept = []
+        for h in hits:
+            cstart, cend, ostart, oend = h
+
+            # reject if fully contained in any kept hit (same frame only)
+            contained = False
+            for k in kept:
+                kcstart, kcend, _, _ = k
+                if kcstart <= cstart and cend <= kcend:
+                    contained = True
+                    break
+
+            if not contained:
+                kept.append(h)
+
+        final_hits.extend(kept)
+
+    # return actual sequence segments
+    return [seq[o_start:o_end+1] for _, _, o_start, o_end in final_hits]
+
+
+def Analyze_uORFs(sequence, bedline):
     """
-    Find all upstream ORFs in a sequence marked with '^mainORF*'
-    Uses single regex approach for clarity, similar to other ORF-finding functions
+    Analyze upstream ORFs in a sequence marked with '^mainORF*'
+    Uses find_uorfs function for ORF detection, then processes results
     
     Args:
         sequence (str): Sequence with '^' marking main ORF start and '*' marking end
@@ -251,81 +370,64 @@ def find_upstream_orfs(sequence, bedline):
         tuple: (genomic_positions, classifications, lengths, relative_positions)
     """
     
-    # Find main ORF position
+    # Find main ORF position for relative calculations
     main_orf_match = re.search(r'\^', sequence)
     if not main_orf_match:
         return "", "", "", ""
     
     main_orf_start = main_orf_match.start()
-    upstream_sequence = sequence[:main_orf_start]
     
-    # Single regex to find all potential ORFs (ATG to stop codon or end)
-    # This matches: ATG + (non-stop codons)* + (stop codon)?
-    # Using positive lookahead to find overlapping matches, similar to your insert_marks_for_longest_ORF
-    orf_regex = r"(?=(\|?A\|?T\|?G\|?(?:(?!\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)\|?[ACGTN]\|?[ACGTN]\|?[ACGTN])*(?:\|?T\|?A\|?A|\|?T\|?A\|?G|\|?T\|?G\|?A)?))"
+    # Use existing find_uorfs function to get all upstream ORFs
+    uorf_sequences = find_uorfs(sequence)
     
-    all_orfs = re.findall(orf_regex, upstream_sequence, flags=re.IGNORECASE)
+    if not uorf_sequences:
+        return "", "", "", ""
     
-    # Group by reading frame and keep longest per frame
-    frame_orfs = {}  # frame -> (start_pos, orf_sequence, length)
-    
-    for orf_sequence in all_orfs:
-        # Find start position of this ORF in upstream sequence
-        orf_start_pos = upstream_sequence.find(orf_sequence)
-        
-        # Calculate reading frame based on clean position
-        clean_orf_start = len(re.sub(r'[\^\|\*]', '', sequence[:orf_start_pos]))
-        orf_frame = clean_orf_start % 3
-        
-        # Calculate length in amino acids
-        clean_orf_sequence = re.sub(r'[\^\|\*]', '', orf_sequence)
-        aa_length = len(clean_orf_sequence) // 3
-        
-        # Keep longest ORF per frame
-        if orf_frame not in frame_orfs or aa_length > frame_orfs[orf_frame][2]:
-            frame_orfs[orf_frame] = (orf_start_pos, orf_sequence, aa_length)
-    
-    # Process results
+    # Process each uORF
     genomic_positions = []
     classifications = []
     lengths = []
     relative_positions = []
     
-    # Calculate main ORF frame for comparison
+    # Calculate main ORF clean position (without markers) for relative positioning
     clean_main_start = len(re.sub(r'[\^\|\*]', '', sequence[:main_orf_start]))
-    main_frame = clean_main_start % 3
     
-    for orf_frame, (orf_start_pos, orf_sequence, aa_length) in frame_orfs.items():
-        # Skip same-frame ORFs
-        if orf_frame == main_frame:
-            continue
-            
-        # Classify based on whether ORF ends before main ORF
-        orf_end_pos = orf_start_pos + len(orf_sequence)
-        if orf_end_pos <= main_orf_start:
+    for uorf_seq in uorf_sequences:
+        # Find where this uORF starts in the original sequence
+        uorf_start_pos = sequence.find(uorf_seq)
+        uorf_end_pos = uorf_start_pos + len(uorf_seq)
+        
+        # Classify based on whether uORF ends before main ORF
+        if uorf_end_pos <= main_orf_start:
             classification = "uORF"
         else:
             classification = "Overlapping_uORF"
         
-        # Convert to genomic coordinates - ensure it's a proper integer
-        clean_transcript_pos = len(re.sub(r'[\^\|\*]', '', sequence[:orf_start_pos]))
+        # Calculate clean transcript position (removing markers)
+        clean_transcript_pos = len(re.sub(r'[\^\|\*]', '', sequence[:uorf_start_pos]))
+        
+        # Convert to genomic coordinates
         genomic_pos = get_absolute_pos(bedline, clean_transcript_pos)
         
-        # Calculate relative position
+        # Calculate relative position to main ORF start
         relative_pos = clean_transcript_pos - clean_main_start
         
-        # Store results - make sure we're storing proper strings
-        genomic_positions.append(str(int(genomic_pos)))  # Force integer conversion
+        # Calculate length in amino acids
+        clean_uorf_seq = re.sub(r'[\^\|\*]', '', uorf_seq)
+        aa_length = len(clean_uorf_seq) // 3
+        
+        # Store results as strings
+        genomic_positions.append(str(int(genomic_pos)))
         classifications.append(str(classification))
-        lengths.append(str(int(aa_length)))             # Force integer conversion  
-        relative_positions.append(str(int(relative_pos))) # Force integer conversion
+        lengths.append(str(int(aa_length)))
+        relative_positions.append(str(int(relative_pos)))
     
-    # Return comma-separated strings - handle empty case
+    # Return semicolon-separated strings instead of comma-separated
     return (
-        ",".join(genomic_positions) if genomic_positions else "",
-        ",".join(classifications) if classifications else "", 
-        ",".join(lengths) if lengths else "",
-        ",".join(relative_positions) if relative_positions else ""
+        ";".join(genomic_positions) if genomic_positions else "",
+        ";".join(classifications) if classifications else "", 
+        ";".join(lengths) if lengths else "",
+        ";".join(relative_positions) if relative_positions else ""
     )
 
 def Is_bedline_complete(bedline):
@@ -637,6 +739,8 @@ def add_gene_type_to_gtf(gtf_io, gene_type_dict):
     updated_gtf_io.seek(0)
     return updated_gtf_io
 
+
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description="Helper script to reformat GTF file for compatibility with SpliceJunctionClassifier.py. More specifically, for a GTF to be compatible with that script, each gene feature and transcript feature must have a 'gene_type' and 'gene_name' attributes where 'gene_type' attribute value is 'protein_coding' for protein coding genes, and 'gene_name' attribute value is unique for each gene. Each child transcript feature must also have 'transcript_type' and 'transcript_name' attributes, where 'transcript_type' is 'protein_coding' for protein_coding (productive) transcript isoforms. Also, each protein_coding isoform must have a child 'exon' 'CDS', 'start_codon' and 'stop_codon' features (which also have the gene_type, gne_name, transcript_type, and transcript_name attributes of their parent features). As in Gencode v43 GTFs, transcripts that are not 'protein_coding' may also have 'CDS', 'start_codon' and 'start_codon' child features but if the transcript_type attribute is not 'protein_coding', these will not determine inclusion into the set of productive start/stop codons by SpliceJunctionClassifier.py. Furthermore, this script adds NMDetectiveB attributes to the transcript (see options for this feature). This is useful in cases when a GTF may be missing 'transcript_type' attribute, and if it is even missing 'CDS' features, this script can add the 'CDS', 'start_codon', and 'stop_codon' features after attempting to translate the transcript sequence and assign values to the 'transcript_type' attribute (eg, 'protein_coding' if NMDetectiveB result is 'Last exon' and 'noncoding if NMDetectiveB result is 'Trigger NMD'). This script also optionally can output bed12 file for each transcript. I have tested this on some GTF files from Gencode, Ensembl, and UCSC. Depending on the exact nature (eg attribute names) in the input GTF, you may have to alter some options to make the output suitable for SpliceJunctionClassifier.py.")
     parser.add_argument('-i', dest='transcripts_in', required=True, help='Input file containing transcript structures. Can be GTF format or BED12 format (see -input_type). Gzipped files (.gz) are automatically detected and supported.')
@@ -655,7 +759,8 @@ def parse_args(args=None):
     parser.add_argument('-extra_attributes', dest='extra_attributes', default='transcript_support_level,tag,ccds_id',
                         help='Extra transcript attributes (comma delimited quoted string). default: "%(default)s"')
     parser.add_argument('-NMDetectiveB_coding_threshold', dest='NMDetectiveB_coding_threshold', type=int, choices=[1,2,3,4,5,6,7], default=5, help='NMDetectiveB classifies each transcript into 7 ordinal categories, from the most coding potential to the least coding potential: (1) Last exon (2) Start proximal (3) 50nt rule (4) Long exon (5) Trigger NMD (6) No stop (7) No CDS. Transcripts with classified as this NMDetective value or greater will be assigned transcript_type attribute value of "noncoding", while others will be value of "protein_coding". default: "%(default)s"')
-    parser.add_argument('-translation_approach', dest='translation_approach', choices=['A', 'B', 'C', 'D', 'E'], default='B', help='Approach to use NMDetective to annotate CDS in output for genes where gene_biotype/gene_type == "protein_coding", some of which may not have annotated CDS in input (eg transcript_type=="processed_transcript"). Possible approaches: (A) using annotated ORF if ORF is present in input with 5UTR and 3UTR. If 3UTR is present and 5UTR is absent (suggesting stop codon is annotated but start codon may be outside of the transcript bounds), search for longest ORF within transcript bounds where a start codon is not required at the beginning of ORF. Similarly, if 5UTR is present but 3UTR is absent, search for longest ORF without requiring stop codon. If neither UTR is present, or if no CDS is annotated in input, search for longest ORF, not requiring start or stop within transcript bounds. I think this approach might be useful to correctly identify the ORF, even if transcript bounds are not accurate, but it has the downside that true "processed_transcripts" with a internal TSS that eliminates the correct start codon, may be erronesously be classified as "Last exon" (ie productive) transcripts by NMDFinderB. (B) Use only annotated CDS. In effect, output gtf is the same except start_codon and stop_codon features are added even if not present in input. This would be useful for dealing with "processed_transcripts" properly by NMDFinder, but I havent checked whether CDS annotations in poorly annotated species (eg lamprey, chicken, etc) are reasonable, which could be a problem for Yangs script. (C) use annotated CDS if present, and use first ATG if no CDS present (minimum ORF length of 30 codons, not including start or stop). (D) Same as (C) but no minimum ORF length. (E) Use first ORF with minimum length > 42, regardless of annotation')
+    parser.add_argument('-translation_approach', dest='translation_approach', choices=['A', 'B', 'C', 'D', 'E', 'F'], default='B', help='Approach to use NMDetective to annotate CDS in output for genes where gene_biotype/gene_type == "protein_coding", some of which may not have annotated CDS in input (eg transcript_type=="processed_transcript"). Possible approaches: (A) using annotated ORF if ORF is present in input with 5UTR and 3UTR. If 3UTR is present and 5UTR is absent (suggesting stop codon is annotated but start codon may be outside of the transcript bounds), search for longest ORF within transcript bounds where a start codon is not required at the beginning of ORF. Similarly, if 5UTR is present but 3UTR is absent, search for longest ORF without requiring stop codon. If neither UTR is present, or if no CDS is annotated in input, search for longest ORF, not requiring start or stop within transcript bounds. I think this approach might be useful to correctly identify the ORF, even if transcript bounds are not accurate, but it has the downside that true "processed_transcripts" with a internal TSS that eliminates the correct start codon, may be erronesously be classified as "Last exon" (ie productive) transcripts by NMDFinderB. (B) Use only annotated CDS. In effect, output gtf is the same except start_codon and stop_codon features are added even if not present in input. This would be useful for dealing with "processed_transcripts" properly by NMDFinder, but I havent checked whether CDS annotations in poorly annotated species (eg lamprey, chicken, etc) are reasonable, which could be a problem for Yangs script. (C) use annotated CDS if present, and use first ATG if no CDS present (minimum ORF length controlled by --min_new_ORF_length). (D) Use first ORF regardless of annotation (minimum ORF length controlled by --min_new_ORF_length). (E) Use longest ORF with both start and stop codons required (minimum ORF length controlled by --min_new_ORF_length). (F) Use longest ORF with start codon required but no stop codon required (minimum ORF length controlled by --min_new_ORF_length) - useful for detecting no-stop decay in full-length reads.')
+    parser.add_argument('--min_new_ORF_length', dest='min_new_ORF_length', type=int, default=50, help='Minimum ORF length (in codons) for newly predicted ORFs in translation approaches C, D, E, and F. Only relevant when using translation approach C, D, E, or F. default: %(default)s')
     parser.add_argument('--include_uorf_analysis', action='store_true', help='Include upstream ORF (uORF) analysis in output. Adds uORF_genomic_positions, uORF_classifications, uORF_lengths_aa, and uORF_relative_positions attributes.', default=False)
     parser.add_argument('-v', '--verbose', action='store_true', help='Increase verbosity')
     return parser.parse_args(args)
@@ -688,9 +793,13 @@ def main(args=None):
     else:
         logging.info("BED output: disabled")
     logging.info("Input FASTA file: %s", args.fasta_in)
-    if args.extra_attributes:
+    # Handle extra attributes based on input type
+    if args.input_type == "gtf" and args.extra_attributes:
         extra_attributes = args.extra_attributes.split(',')
         logging.info("Extra attributes: %s", extra_attributes)
+    elif args.input_type == "bed12":
+        extra_attributes = []  # BED12 input doesn't have GTF extra attributes
+        logging.info("BED12 input: no extra attributes")
     else:
         extra_attributes = []
         logging.info("No extra attributes provided.")
@@ -760,7 +869,11 @@ def main(args=None):
     gene_types_dict = defaultdict(lambda: defaultdict((set)))
     bed_out_fh = None
     if args.bed12_out:
-        bed_out_fh = open(args.bed12_out, 'w')
+        # Auto-detect gzip output for BED12
+        bed_open_func = gzip.open if args.bed12_out.endswith('.gz') else open
+        bed_mode = 'wt' if args.bed12_out.endswith('.gz') else 'w'
+        bed_out_fh = bed_open_func(args.bed12_out, bed_mode)
+        
         # Write BED file header
         bed_header_fields = [
             "chr", "start", "end", "name", "score", "strand", 
@@ -778,8 +891,8 @@ def main(args=None):
                           "uORF_lengths_aa", "uORF_relative_positions"]
             bed_header_fields.extend(uorf_attrs)
         
-        # Add extra attributes from input (this is what you were missing!)
-        if args.extra_attributes:
+        # Add extra attributes from input only if they exist
+        if extra_attributes:
             bed_header_fields.extend(extra_attributes)
         
         # Write header line
@@ -838,23 +951,25 @@ def main(args=None):
                     source = "input_gtf"
                 else:
                     source = "FirstORF_NoStopRequired"
-                    sequence = insert_marks_for_first_ORF(transcript.extract_sequence(fasta_obj), require_STOP = False, min_ORF_len = 30)
+                    sequence = insert_marks_for_first_ORF(transcript.extract_sequence(fasta_obj), require_STOP = False, min_ORF_len = args.min_new_ORF_length)
                     thickStart, thickStop = get_thickStart_thickStop_from_marked_seq(transcript, sequence)
                     transcript_out = bedparse.bedline([transcript.chr, transcript.start, transcript.end, transcript.name, transcript.score, transcript.strand, thickStart, thickStop, transcript.color, transcript.nEx, transcript.exLengths, transcript.exStarts])
                 NMDFinderB = get_NMD_detective_B_classification(sequence)
             elif args.translation_approach == 'D':
-                if transcript.cds():
-                    sequence = transcript.extract_sequence(fasta_obj, AddMarksForORF=True)
-                    source = "input_gtf"
-                else:
-                    source = "FirstORF_NoStopRequired"
-                    sequence = insert_marks_for_first_ORF(transcript.extract_sequence(fasta_obj), require_STOP = False, min_ORF_len = 0)
-                    thickStart, thickStop = get_thickStart_thickStop_from_marked_seq(transcript, sequence)
-                    transcript_out = bedparse.bedline([transcript.chr, transcript.start, transcript.end, transcript.name, transcript.score, transcript.strand, thickStart, thickStop, transcript.color, transcript.nEx, transcript.exLengths, transcript.exStarts])
+                source = "FirstORF_NoStopRequired"
+                sequence = insert_marks_for_first_ORF(transcript.extract_sequence(fasta_obj), require_STOP = False, min_ORF_len = args.min_new_ORF_length)
+                thickStart, thickStop = get_thickStart_thickStop_from_marked_seq(transcript, sequence)
+                transcript_out = bedparse.bedline([transcript.chr, transcript.start, transcript.end, transcript.name, transcript.score, transcript.strand, thickStart, thickStop, transcript.color, transcript.nEx, transcript.exLengths, transcript.exStarts])
                 NMDFinderB = get_NMD_detective_B_classification(sequence)
             elif args.translation_approach == 'E':
-                source = "FirstORF_NoStopRequired"
-                sequence = insert_marks_for_first_ORF(transcript.extract_sequence(fasta_obj), require_STOP = False, min_ORF_len = 42)
+                source = "LongestORF_WithMinLength"
+                sequence = insert_marks_for_longset_ORF(transcript.extract_sequence(fasta_obj), require_ATG=True, require_STOP=True, min_ORF_len=args.min_new_ORF_length)
+                thickStart, thickStop = get_thickStart_thickStop_from_marked_seq(transcript, sequence)
+                transcript_out = bedparse.bedline([transcript.chr, transcript.start, transcript.end, transcript.name, transcript.score, transcript.strand, thickStart, thickStop, transcript.color, transcript.nEx, transcript.exLengths, transcript.exStarts])
+                NMDFinderB = get_NMD_detective_B_classification(sequence)
+            elif args.translation_approach == 'F':
+                source = "LongestORF_NoStopRequired"
+                sequence = insert_marks_for_longset_ORF(transcript.extract_sequence(fasta_obj), require_ATG=True, require_STOP=False, min_ORF_len=args.min_new_ORF_length)
                 thickStart, thickStop = get_thickStart_thickStop_from_marked_seq(transcript, sequence)
                 transcript_out = bedparse.bedline([transcript.chr, transcript.start, transcript.end, transcript.name, transcript.score, transcript.strand, thickStart, thickStop, transcript.color, transcript.nEx, transcript.exLengths, transcript.exStarts])
                 NMDFinderB = get_NMD_detective_B_classification(sequence)
@@ -877,10 +992,9 @@ def main(args=None):
             for k, v in extra_calculated_transcript_attributes.items():
                 transcript_attributes += f' tag "{k}":"{v}";'
 
-            # if transcript.name == "ENST00000433179.4": breakpoint()
             # Conditionally add upstream ORF analysis
             if args.include_uorf_analysis:
-                uorf_genomic_pos, uorf_classes, uorf_lengths, uorf_relative_pos = find_upstream_orfs(sequence, transcript_out)
+                uorf_genomic_pos, uorf_classes, uorf_lengths, uorf_relative_pos = Analyze_uORFs(sequence, transcript_out)
                 transcript_attributes += f' tag "uORF_genomic_positions":"{uorf_genomic_pos}";'
                 transcript_attributes += f' tag "uORF_classifications":"{uorf_classes}";'
                 transcript_attributes += f' tag "uORF_lengths_aa":"{uorf_lengths}";'
@@ -904,7 +1018,7 @@ def main(args=None):
                 
                 bed_extra_fields.extend(extra_attribute_values)
                 
-                _ = bed_out_fh.write(bed12_formatted_bedline(transcript, 
+                _ = bed_out_fh.write(bed12_formatted_bedline(transcript_out, 
                                                             color=get_NMD_detective_B_classification_color(NMDFinderB), 
                                                             attributes_str='\t' + '\t'.join(bed_extra_fields)))
             # Track gene information
@@ -943,21 +1057,26 @@ def main(args=None):
         # Write out gene_type attributes
         gtf_stringio_updated = add_gene_type_to_gtf(gtf_stringio, gene_types_dict_final)
 
-    logging.info('sorting and writing out gtf')
-    # output filehandle
-    with open(args.gtf_out, 'w') as output_fh:
-        # transfer commented headers from original input file (if GTF format)
-        if args.input_type == "gtf":
-            open_func = gzip.open if args.transcripts_in.endswith('.gz') else open
-            mode = 'rt' if args.transcripts_in.endswith('.gz') else 'r'
-            with open_func(args.transcripts_in, mode) as input_fh:
-                for l in input_fh:
-                    if l.startswith('#'):
-                        _ = output_fh.write(l)
-                    else:
-                        break
-        _ = output_fh.write(f"#! args: {args}\n")
-        reorder_gtf(gtf_stringio_updated, output_fh, mode='a')
+        logging.info('sorting and writing out gtf')
+        # Auto-detect gzip output for GTF
+        gtf_open_func = gzip.open if args.gtf_out.endswith('.gz') else open
+        gtf_mode = 'wt' if args.gtf_out.endswith('.gz') else 'w'
+        
+        with gtf_open_func(args.gtf_out, gtf_mode) as output_fh:
+            # transfer commented headers from original input file (if GTF format)
+            if args.input_type == "gtf":
+                input_open_func = gzip.open if args.transcripts_in.endswith('.gz') else open
+                input_mode = 'rt' if args.transcripts_in.endswith('.gz') else 'r'
+                with input_open_func(args.transcripts_in, input_mode) as input_fh:
+                    for l in input_fh:
+                        if l.startswith('#'):
+                            _ = output_fh.write(l)
+                        else:
+                            break
+            _ = output_fh.write(f"#! args: {args}\n")
+            reorder_gtf(gtf_stringio_updated, output_fh, mode='a')
+    else:
+        logging.info('GTF output disabled - skipping GTF processing and sorting')
 
 if __name__ == "__main__":
     if hasattr(sys, 'ps1'):
@@ -965,8 +1084,9 @@ if __name__ == "__main__":
         # main("-i scratch/Mouse_UCSC.10K.bed -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
         # main("-i Maz -input_type bed12 -o scratch/Mouse_UCSC.mm39_GencodeComprehensive46.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Mouse_UCSC.mm39_GencodeComprehensive46/Reference.GencodePrimary.fa -v -infer_gene_type_approach A -infer_transcript_type_approach A -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id -n 10000 -bed12_out scratch/Mouse_UCSC.10K.Redone.bed".split(' '))
         # main("-i scratch/TRNAA.gtf -o scratch/TRNAA_reformated.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -v -infer_gene_type_approach B -infer_transcript_type_approach B -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_id".split(' '))
-        main("-i /project2/yangili1/bjf79/ReferenceGenomes/GRCh38_GencodeRelease44Comprehensive/Reference.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -bed12_out scratch/test.bed -n 1000000 -v -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_name -infer_gene_type_approach B".split(' '))
+        # main("-i /project2/yangili1/bjf79/ReferenceGenomes/GRCh38_GencodeRelease44Comprehensive/Reference.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -bed12_out scratch/test.bed -n 1000000 -v -transcript_name_attribute_name transcript_id -gene_name_attribute_name gene_name -infer_gene_type_approach B".split(' '))
         # main("-i scratch/COMMD5.gtf -fa /project2/yangili1/bjf79/ReferenceGenomes/Human_UCSC.hg38_GencodeComprehensive46/Reference.fa -o scratch/test.gtf -bed12_out scratch/test.bed -n 10000 -v -transcript_name_attribute_name transcript_name -gene_name_attribute_name gene_id".split(' '))
+        main("-i scratch/PRNP.bed -input_type bed12 -bed12_column_indexes 4 4 4 4 -fa /project2/yangili1/bjf79/ReferenceGenomes/GRCh38_GencodeRelease44Comprehensive/Reference.fa -bed12_out scratch/PRNP.translated.bed -v -infer_gene_type_approach B -infer_transcript_type_approach C --include_uorf_analysis -translation_approach D".split(' '))
 
     else:
         main()
